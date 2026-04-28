@@ -190,6 +190,29 @@ def _device():
     return torch.device("cpu")
 
 
+def _amp_dtype():
+    """bf16 on hardware that supports it (A100, H100, Blackwell), else None
+    (no autocast, fall back to fp32). bf16 has fp32's dynamic range so we
+    don't need a GradScaler -- it just works in-place of fp32 for the
+    forward + backward.
+
+    Why this matters: ChemBERTa attention on Blackwell + fp32 is producing
+    NaN gradients in ~95% of training steps (the user's previous run).
+    bf16 attention is the standard cure -- Blackwell is designed for it,
+    and the attention softmax + matmul kernels are more numerically robust
+    in bf16 there than fp32 is.
+    """
+    import torch
+
+    if torch.cuda.is_available() and hasattr(torch.cuda, "is_bf16_supported"):
+        try:
+            if torch.cuda.is_bf16_supported():
+                return torch.bfloat16
+        except Exception:
+            pass
+    return None
+
+
 # -------------------- Train / eval ----------------------------------------
 
 
@@ -284,14 +307,14 @@ def _epoch(
     optimizer=None,
 ):
     import torch
+    from contextlib import nullcontext
 
     is_train = optimizer is not None
     model.train(is_train)
     device = _device()
+    amp = _amp_dtype()  # bf16 on supported GPUs, None on T4/CPU
     total_loss = 0.0
     n_batches = 0
-    per_task_se = {t: 0.0 for t in REG_TASKS}
-    per_task_n = {t: 0 for t in REG_TASKS}
     yhats = {t: [] for t in REG_TASKS}
     ys = {t: [] for t in REG_TASKS}
 
@@ -299,9 +322,19 @@ def _epoch(
     with grad_ctx:
         for toks, y_t, m_t in loader:
             toks = {k: v.to(device) for k, v in toks.items()}
-            preds = model(**toks)
 
-            batch_loss = torch.tensor(0.0, device=device)
+            # Autocast forward in bf16 where supported. Loss + standardization
+            # arithmetic stay in fp32 (cast preds back) for numerical stability
+            # in the small-batch multi-task setting.
+            ac_ctx = (
+                torch.autocast(device_type=device.type, dtype=amp)
+                if amp is not None
+                else nullcontext()
+            )
+            with ac_ctx:
+                preds = model(**toks)
+
+            batch_loss = torch.tensor(0.0, device=device, dtype=torch.float32)
             n_terms = 0
             for t in REG_TASKS:
                 m = m_t[t].to(device)
@@ -309,7 +342,7 @@ def _epoch(
                     continue
                 y = y_t[t].to(device)
                 y_std = (y - standardizer.means[t]) / standardizer.stds[t]
-                p = preds[t]
+                p = preds[t].float()  # bf16 -> fp32 for loss
                 loss_t = ((p - y_std) ** 2)[m].mean()
                 batch_loss = batch_loss + weights[t] * loss_t
                 n_terms += 1
@@ -319,8 +352,6 @@ def _epoch(
                 m_np = m.cpu().numpy()
                 yhats[t].extend(p_unstd[m_np].tolist())
                 ys[t].extend(y_np[m_np].tolist())
-                per_task_se[t] += float(((p_unstd[m_np] - y_np[m_np]) ** 2).sum())
-                per_task_n[t] += int(m_np.sum())
 
             if n_terms == 0:
                 continue
@@ -355,58 +386,35 @@ def _epoch(
     return avg_loss, ys, yhats
 
 
-def train_chemberta_multitask(long_df: pd.DataFrame, args) -> list[dict]:
-    """Train one multi-task ChemBERTa+LoRA model and return metrics rows."""
+def _train_one_fold(
+    wide: pd.DataFrame,
+    smi_train: list[str],
+    smi_val: list[str],
+    config: ChemBertaConfig,
+    fold_label: str,
+):
+    """Train a fresh ChemBERTa multi-task model on smi_train; track val_loss
+    on smi_val for early-stopping. Returns (model, standardizer) at the
+    best-val checkpoint.
+    """
     import torch
     from torch.optim import AdamW
-
-    from ..data.splits import random_split_by_smiles
-    from ..eval import parity_plot, regression_metrics
-
-    config = ChemBertaConfig(
-        lora_rank=args.lora_rank,
-        epochs=args.epochs if not args.smoke else 2,
-        batch_size=args.batch_size,
-        lr=args.lr,
-        weight_decay=args.weight_decay,
-        patience=args.patience,
-        max_length=args.max_length,
-        seed=args.seed,
-        tox21_aux=False,  # Day 2: off; Phase 2 turns this on
-        smoke=args.smoke,
-    )
-    seed_everything(config.seed)
-
-    wide = _wide_targets(long_df)
-    # Smoke = full data (so per-task label coverage is realistic), 2 epochs.
-    # Subsampling produces degenerate batches (e.g. all 16 batch rows IRI-only)
-    # that exercise edge cases more than the model itself.
-
-    splits = random_split_by_smiles(
-        wide["smiles_canonical"].unique(), seed=config.seed,
-        train=0.70, val=0.15, test=0.15,
-    )
-    smi_train = sorted([s for s in wide["smiles_canonical"] if s in splits["train"]])
-    smi_val = sorted([s for s in wide["smiles_canonical"] if s in splits["val"]])
-    smi_test = sorted([s for s in wide["smiles_canonical"] if s in splits["test"]])
-    log.info(
-        "ChemBERTa split sizes: train=%d val=%d test=%d",
-        len(smi_train), len(smi_val), len(smi_test),
-    )
+    from ..eval import regression_metrics
 
     train_df = wide[wide["smiles_canonical"].isin(smi_train)]
     standardizer = TaskStandardizer()
     standardizer.fit(train_df)
-    log.info("standardizer means=%s stds=%s", standardizer.means, standardizer.stds)
-
     weights = _task_weights(train_df)
-    log.info("task weights: %s", weights)
+    log.info(
+        "[%s] standardizer means=%s stds=%s",
+        fold_label, standardizer.means, standardizer.stds,
+    )
+    log.info("[%s] task weights: %s", fold_label, weights)
 
-    log.info("loading ChemBERTa-2 + LoRA rank=%d", config.lora_rank)
+    log.info("[%s] loading ChemBERTa-2 + LoRA rank=%d", fold_label, config.lora_rank)
     model = _build_model(config)
     train_loader = _make_batches(smi_train, wide, model.tokenizer, config, shuffle=True, seed=config.seed)
     val_loader = _make_batches(smi_val, wide, model.tokenizer, config, shuffle=False, seed=config.seed)
-    test_loader = _make_batches(smi_test, wide, model.tokenizer, config, shuffle=False, seed=config.seed)
 
     trainable_params = [p for p in model.parameters() if p.requires_grad]
     optimizer = AdamW(trainable_params, lr=config.lr, weight_decay=config.weight_decay)
@@ -414,14 +422,15 @@ def train_chemberta_multitask(long_df: pd.DataFrame, args) -> list[dict]:
     best_val = float("inf")
     best_epoch = -1
     bad_epochs = 0
+    best_state = None
     for epoch in range(1, config.epochs + 1):
         train_loss, _, _ = _epoch(model, train_loader, standardizer, weights, optimizer)
         val_loss, ys, yhats = _epoch(model, val_loader, standardizer, weights, optimizer=None)
         per_task = {t: regression_metrics(np.array(ys[t]), np.array(yhats[t])) for t in REG_TASKS}
         log.info(
-            "epoch %d  train_loss=%.4f  val_loss=%.4f  "
+            "[%s] epoch %d  train_loss=%.4f  val_loss=%.4f  "
             "tox MAE=%.3g rho=%.3g  perm MAE=%.3g rho=%.3g  iri MAE=%.3g rho=%.3g",
-            epoch, train_loss, val_loss,
+            fold_label, epoch, train_loss, val_loss,
             per_task["toxicity"]["mae"], per_task["toxicity"]["spearman"],
             per_task["permeability"]["mae"], per_task["permeability"]["spearman"],
             per_task["iri"]["mae"], per_task["iri"]["spearman"],
@@ -434,25 +443,139 @@ def train_chemberta_multitask(long_df: pd.DataFrame, args) -> list[dict]:
         else:
             bad_epochs += 1
             if bad_epochs >= config.patience:
-                log.info("early-stop at epoch %d (best=%d, val=%.4f)", epoch, best_epoch, best_val)
+                log.info("[%s] early-stop at epoch %d (best=%d, val=%.4f)",
+                         fold_label, epoch, best_epoch, best_val)
                 break
 
-    if best_epoch < 0:
+    if best_state is None:
         log.error(
-            "no epoch reduced val loss below the initial sentinel; this means "
-            "every val batch produced NaN. Returning whatever the final state "
-            "is (likely useless) so we can still inspect the failure mode."
+            "[%s] no epoch reduced val loss; every val batch produced NaN. "
+            "Returning the final state for inspection.", fold_label,
         )
     else:
         model.load_state_dict({k: v.to(_device()) for k, v in best_state.items()})
+    return model, standardizer
+
+
+def _predict_smiles(
+    model,
+    wide: pd.DataFrame,
+    standardizer: TaskStandardizer,
+    smi_list: list[str],
+    config: ChemBertaConfig,
+) -> dict[str, dict]:
+    """Run the trained model on smi_list, return {task: {smiles: pred}}.
+
+    Runs in eval mode with autocast (bf16) where supported. We need per-
+    compound predictions for OOF aggregation in CV, which _epoch flattens
+    away, so this batches manually.
+    """
+    import torch
+    from contextlib import nullcontext
+
+    out: dict[str, dict[str, float]] = {t: {} for t in REG_TASKS}
+    device = _device()
+    amp = _amp_dtype()
+    model.eval()
+    bs = config.batch_size
+    with torch.no_grad():
+        for i in range(0, len(smi_list), bs):
+            batch_smi = smi_list[i : i + bs]
+            toks = model.tokenizer(
+                batch_smi,
+                padding=True,
+                truncation=True,
+                max_length=config.max_length,
+                return_tensors="pt",
+            )
+            toks = {k: v.to(device) for k, v in toks.items()}
+            ac_ctx = (
+                torch.autocast(device_type=device.type, dtype=amp)
+                if amp is not None else nullcontext()
+            )
+            with ac_ctx:
+                preds = model(**toks)
+            for t in REG_TASKS:
+                p_unstd = (preds[t].float() * standardizer.stds[t] + standardizer.means[t]).cpu().numpy()
+                for s, val in zip(batch_smi, p_unstd):
+                    out[t][s] = float(val)
+    return out
+
+
+def _make_config(args) -> ChemBertaConfig:
+    return ChemBertaConfig(
+        lora_rank=args.lora_rank,
+        epochs=args.epochs if not args.smoke else 2,
+        batch_size=args.batch_size,
+        lr=args.lr,
+        weight_decay=args.weight_decay,
+        patience=args.patience,
+        max_length=args.max_length,
+        seed=args.seed,
+        tox21_aux=False,
+        smoke=args.smoke,
+    )
+
+
+def _eval_per_task(
+    smi_to_pred: dict[str, dict[str, float]],
+    wide: pd.DataFrame,
+    smi_subset: list[str],
+) -> dict[str, tuple[np.ndarray, np.ndarray]]:
+    """Build per-task (y_true, y_pred) arrays from the predictions dict,
+    keeping only smiles that have a label for that task.
+    """
+    out = {}
+    for t in REG_TASKS:
+        sub = wide[wide["smiles_canonical"].isin(smi_subset)].dropna(subset=[t])
+        ys, yhats = [], []
+        for _, row in sub.iterrows():
+            s = row["smiles_canonical"]
+            if s in smi_to_pred[t]:
+                ys.append(float(row[t]))
+                yhats.append(smi_to_pred[t][s])
+        out[t] = (np.array(ys), np.array(yhats))
+    return out
+
+
+def train_chemberta_multitask(long_df: pd.DataFrame, args) -> list[dict]:
+    """Public entry. Dispatches to single-split or k-fold CV based on args.cv."""
+    seed_everything(args.seed)
+    wide = _wide_targets(long_df)
+    config = _make_config(args)
+
+    if args.cv:
+        return _train_chemberta_kfold(wide, args, config)
+    return _train_chemberta_single_split(wide, args, config)
+
+
+def _train_chemberta_single_split(
+    wide: pd.DataFrame, args, config: ChemBertaConfig,
+) -> list[dict]:
+    from ..data.splits import random_split_by_smiles
+    from ..eval import parity_plot, regression_metrics
+
+    splits = random_split_by_smiles(
+        wide["smiles_canonical"].unique(), seed=config.seed,
+        train=0.70, val=0.15, test=0.15,
+    )
+    smi_train = sorted([s for s in wide["smiles_canonical"] if s in splits["train"]])
+    smi_val = sorted([s for s in wide["smiles_canonical"] if s in splits["val"]])
+    smi_test = sorted([s for s in wide["smiles_canonical"] if s in splits["test"]])
+    log.info(
+        "ChemBERTa 70/15/15 split sizes: train=%d val=%d test=%d",
+        len(smi_train), len(smi_val), len(smi_test),
+    )
+
+    model, standardizer = _train_one_fold(wide, smi_train, smi_val, config, fold_label="single")
 
     rows: list[dict] = []
     model_tag = f"chemberta_r{config.lora_rank}_seed{config.seed}"
-    for split_name, loader in (("val", val_loader), ("test", test_loader)):
-        _, ys, yhats = _epoch(model, loader, standardizer, weights, optimizer=None)
+    for split_name, smi_subset in (("val", smi_val), ("test", smi_test)):
+        preds = _predict_smiles(model, wide, standardizer, smi_subset, config)
+        per_task = _eval_per_task(preds, wide, smi_subset)
         for t in REG_TASKS:
-            y = np.array(ys[t])
-            yh = np.array(yhats[t])
+            y, yh = per_task[t]
             m = regression_metrics(y, yh)
             rows.append({
                 "model": model_tag,
@@ -462,4 +585,71 @@ def train_chemberta_multitask(long_df: pd.DataFrame, args) -> list[dict]:
                 **m,
             })
             parity_plot(y, yh, task=t, split=split_name, model_tag=model_tag)
+    return rows
+
+
+def _train_chemberta_kfold(
+    wide: pd.DataFrame, args, config: ChemBertaConfig,
+) -> list[dict]:
+    """5-fold CV: train k fresh ChemBERTas, each holding out one fold globally
+    across all compounds. Aggregate OOF predictions for per-task metrics.
+    """
+    from ..data.splits import kfold_split_by_smiles
+    from ..eval import parity_plot, regression_metrics
+
+    k = args.cv_folds
+    folds = kfold_split_by_smiles(
+        wide["smiles_canonical"].unique(), k=k, seed=config.seed,
+    )
+    log.info("ChemBERTa %d-fold CV: fold sizes = %s", k, [len(test) for _, test in folds])
+
+    # OOF predictions: smiles -> {task: pred}
+    oof: dict[str, dict[str, float]] = {t: {} for t in REG_TASKS}
+    for fi, (train_set, test_set) in enumerate(folds):
+        smi_train_full = sorted(train_set)
+        # Use a tiny inner val carve-out for early stopping (10% of train fold).
+        # The inner val isn't task-specific; it's for loss-curve early stop.
+        n_val = max(1, len(smi_train_full) // 10)
+        smi_val_inner = smi_train_full[:n_val]
+        smi_train = smi_train_full[n_val:]
+        smi_test = sorted(test_set)
+        log.info(
+            "ChemBERTa fold %d/%d: train=%d (inner_val=%d) test=%d",
+            fi + 1, k, len(smi_train), len(smi_val_inner), len(smi_test),
+        )
+        model, standardizer = _train_one_fold(
+            wide, smi_train, smi_val_inner, config, fold_label=f"fold {fi}"
+        )
+        preds = _predict_smiles(model, wide, standardizer, smi_test, config)
+        for t in REG_TASKS:
+            for s, p in preds[t].items():
+                oof[t][s] = p
+        # Free GPU memory between folds
+        import torch
+        del model
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    rows: list[dict] = []
+    model_tag = f"chemberta_r{config.lora_rank}_seed{config.seed}"
+    scheme = f"{k}-fold-CV"
+    for t in REG_TASKS:
+        sub = wide.dropna(subset=[t])
+        ys, yhats = [], []
+        for _, row in sub.iterrows():
+            s = row["smiles_canonical"]
+            if s in oof[t]:
+                ys.append(float(row[t]))
+                yhats.append(oof[t][s])
+        y_arr, yh_arr = np.array(ys), np.array(yhats)
+        m = regression_metrics(y_arr, yh_arr)
+        rows.append({
+            "model": model_tag,
+            "task": t,
+            "scheme": scheme,
+            "split": "oof",
+            **m,
+        })
+        parity_plot(y_arr, yh_arr, task=t, split=f"oof_{k}fold",
+                    model_tag=model_tag)
     return rows

@@ -53,12 +53,29 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--lora-rank", type=int, default=8)
     p.add_argument("--epochs", type=int, default=30)
     p.add_argument("--batch-size", type=int, default=32)
-    p.add_argument("--lr", type=float, default=1e-4)
+    # Lowered from 1e-4 (spec default) to 5e-5 after the previous Colab run
+    # produced ~95% NaN-grad skip rate. 5e-5 is the standard fine-tuning lr
+    # for transformer LoRA at this model size; combined with bf16 autocast
+    # this should give stable training on Blackwell / H100 / A100 / T4.
+    p.add_argument("--lr", type=float, default=5e-5)
     p.add_argument("--weight-decay", type=float, default=0.01)
     p.add_argument("--patience", type=int, default=5)
     p.add_argument("--max-length", type=int, default=128)
     p.add_argument("--no-tox21-aux", action="store_true",
                    help="disable Tox21 auxiliary head (faster, no DeepChem dep)")
+    p.add_argument(
+        "--cv",
+        action="store_true",
+        help="ChemBERTa: train 5 models on a 5-fold CV split for apples-to-apples "
+             "comparison with the RF baseline on the small Higgins tasks. Default "
+             "off uses a single 70/15/15 train/val/test split.",
+    )
+    p.add_argument(
+        "--cv-folds",
+        type=int,
+        default=5,
+        help="number of CV folds when --cv is set (default 5)",
+    )
     p.add_argument("--smoke", action="store_true",
                    help="2-epoch smoke run on subset for local sanity")
     return p.parse_args()
@@ -112,15 +129,16 @@ def run_rf(args: argparse.Namespace) -> dict:
     rows: list[dict] = []
     summary_metrics: dict = {}
 
-    # ---- IRI: 70/15/15 train/val/test ------------------------------------
+    # ---- IRI: 70/15/15 train/val/test (canonical) + 5-fold CV (for ChemBERTa
+    # comparison since ChemBERTa --cv runs all tasks under 5-fold CV) -------
     iri_df = long_df[long_df["task"] == "iri"]
     if not iri_df.empty:
+        # Primary: 70/15/15 (n=303 supports it; this is the canonical IRI eval)
         splits = random_split_by_smiles(
             iri_df["smiles_canonical"].unique(),
             seed=args.seed,
             train=IRI_TRAIN, val=IRI_VAL, test=IRI_TEST,
         )
-        # train_rf_per_task can take only one task by filtering input
         rf_results = train_rf_per_task(iri_df, splits, config=config)
         for task, art in rf_results.items():
             for split in ("train", "val", "test"):
@@ -138,9 +156,32 @@ def run_rf(args: argparse.Namespace) -> dict:
                     task=task, split=split,
                     model_tag=f"rf_seed{args.seed}",
                 )
-        summary_metrics["iri"] = {"scheme": "70/15/15", "n_train": rf_results["iri"]["n_train"],
-                                  "n_val": rf_results["iri"]["n_val"],
-                                  "n_test": rf_results["iri"]["n_test"]}
+        summary_metrics["iri_70_15_15"] = {
+            "scheme": "70/15/15",
+            "n_train": rf_results["iri"]["n_train"],
+            "n_val": rf_results["iri"]["n_val"],
+            "n_test": rf_results["iri"]["n_test"],
+        }
+        # Secondary: 5-fold CV (for direct comparison with ChemBERTa --cv)
+        folds = kfold_split_by_smiles(
+            iri_df["smiles_canonical"].unique(), k=KFOLD_K, seed=args.seed,
+        )
+        cv = train_rf_kfold(iri_df, "iri", folds, config=config)
+        m = regression_metrics(cv["y_oof"], cv["yhat_oof"])
+        rows.append({
+            "model": f"rf_seed{args.seed}",
+            "task": "iri",
+            "scheme": f"{KFOLD_K}-fold-CV",
+            "split": "oof",
+            **m,
+        })
+        parity_plot(cv["y_oof"], cv["yhat_oof"], task="iri",
+                    split=f"oof_{KFOLD_K}fold",
+                    model_tag=f"rf_seed{args.seed}")
+        summary_metrics["iri_kfold"] = {
+            "scheme": f"{KFOLD_K}-fold-CV",
+            "n_oof": int(len(cv["y_oof"])),
+        }
 
     # ---- Toxicity: 5-fold CV --------------------------------------------
     tox_df = long_df[long_df["task"] == "toxicity"]
