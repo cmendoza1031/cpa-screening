@@ -1,13 +1,19 @@
 # Phase 1 Day 2+ deep-learning extras.
 #
 # Install AFTER the base requirements.txt:
-#     pip install -U -r requirements-deep.txt
+#     pip install -r requirements-deep.txt
 #
-# The -U flag is important on Colab: torch / transformers / peft / torchao
-# are pre-installed at versions that fight each other (e.g., peft 0.19's LoRA
-# dispatcher requires torchao >= 0.16, but Colab pre-installs torchao 0.10
-# which raises ImportError when peft probes for it). Without -U, pip leaves
-# the stale versions in place and training crashes.
+# DO NOT use -U here. -U force-upgrades EVERY package listed, including
+# torch. Colab pre-installs a torch + torchvision pair compiled against
+# the same CUDA version (e.g. torch 2.10+cu128 + torchvision 0.25+cu128).
+# -U bumps torch to the latest (2.11+cu130) while leaving torchvision at
+# cu128, and torchvision's _check_cuda_version() then refuses to load,
+# which cascades into peft / transformers import failures (torchvision is
+# pulled in transitively via transformers.image_utils).
+#
+# Without -U, pip leaves already-satisfied packages alone and only upgrades
+# the one constraint-violator (torchao 0.10 -> 0.16+). torch + torchvision
+# stay paired. peft loads cleanly. This is what we want.
 #
 # DeepChem is NOT in this file because (a) it has no Python 3.12 wheel on
 # PyPI which causes pip to abort the entire resolution before any package
