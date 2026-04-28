@@ -48,6 +48,46 @@ def _log_failure(kind: str, query: str, reason: str) -> None:
         f.write(f"{kind}\t{query}\t{reason}\n")
 
 
+def _format_cas(query: str) -> str:
+    """Reformat a bare-digit CAS number to canonical dashed form.
+
+    PubChem's name-search recognizes CAS numbers only in dashed form
+    (XXXX-XX-X). The FDA IID stores them as bare digits (e.g. '98555' for
+    alpha-terpineol), so passing them straight to PubChem misses every real
+    small molecule (we verified this -- '98555' gets 0 hits, '98-55-5' gets
+    1 hit returning the expected SMILES).
+
+    Algorithm: strip any existing dashes, validate it's 4-10 digits, then
+    insert dashes at -1 and -3 (last 1 char is the check digit, the 2 before
+    that are the middle group, the rest is the registry portion).
+    Non-CAS-looking inputs (alphanumeric trade names, etc.) pass through
+    unchanged so the caller can still try them as names.
+    """
+    s = query.strip().replace("-", "")
+    if not s.isdigit() or not 4 <= len(s) <= 10:
+        return query.strip()
+    return f"{s[:-3]}-{s[-3:-1]}-{s[-1]}"
+
+
+def _extract_smiles(compound) -> Optional[str]:
+    """Pull SMILES off a pubchempy Compound, preferring the new 'smiles'
+    attribute over the deprecated 'isomeric_smiles'. Avoids spamming
+    PubChemPyDeprecationWarning on every call."""
+    try:
+        s = getattr(compound, "smiles", None)
+        if s:
+            return s
+    except Exception:
+        pass
+    try:
+        s = getattr(compound, "canonical_smiles", None)
+        if s:
+            return s
+    except Exception:
+        pass
+    return None
+
+
 def name_or_cas_to_smiles(
     query: str,
     kind: str = "name",
@@ -57,12 +97,15 @@ def name_or_cas_to_smiles(
 ) -> Optional[str]:
     """Look up a single query against PubChem and return canonical SMILES.
 
-    kind: 'name' or 'cas' (CAS is queried as a name; PubChem accepts both).
+    kind: 'name' or 'cas'. CAS values are normalized to dashed form before
+    the query (and used as the cache key) so a given compound caches under
+    one key regardless of input punctuation.
     Returns None on miss; the miss is logged to FAILURES_PATH.
     """
     if not query or not query.strip():
         return None
-    key = f"{kind}::{query.strip().lower()}"
+    pubchem_query = _format_cas(query) if kind == "cas" else query.strip()
+    key = f"{kind}::{pubchem_query.lower()}"
     cache = _load_cache()
     if key in cache:
         cached = cache[key]
@@ -78,15 +121,11 @@ def name_or_cas_to_smiles(
     for attempt in range(1, max_retries + 1):
         try:
             time.sleep(sleep)
-            compounds = pcp.get_compounds(query.strip(), namespace="name")
+            compounds = pcp.get_compounds(pubchem_query, namespace="name")
             if not compounds:
                 last_err = "no_match"
                 break
-            c = compounds[0]
-            raw_smiles = (
-                getattr(c, "isomeric_smiles", None)
-                or getattr(c, "canonical_smiles", None)
-            )
+            raw_smiles = _extract_smiles(compounds[0])
             if raw_smiles:
                 smiles = canonical_smiles(raw_smiles)
                 if smiles is None:
@@ -104,9 +143,9 @@ def name_or_cas_to_smiles(
     cache[key] = smiles or ""
     if smiles is None:
         _log_failure(kind, query, last_err or "unknown")
-        log.info("pubchem MISS [%s] %s -> %s", kind, query, last_err)
+        log.info("pubchem MISS [%s] %s -> %s", kind, pubchem_query, last_err)
     else:
-        log.debug("pubchem HIT [%s] %s -> %s", kind, query, smiles)
+        log.debug("pubchem HIT [%s] %s -> %s", kind, pubchem_query, smiles)
 
     if len(cache) % save_every == 0:
         _save_cache()
