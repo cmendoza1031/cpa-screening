@@ -1,0 +1,67 @@
+compound_name,compound_name_2,smiles,smiles_2,concentration_mol_kg,viability_4c,is_mixture
+"2,3-butanediol",,,,3,68,False
+diethylene glycol,,,,3,96,False
+"1,3-dihydroxyacetone",,,,3,78,False
+diglyme,,,,3,0,False
+dimethylacetamide,,,,3,102,False
+ethylene glycol,,,,3,101,False
+glycerol,,,,3,95,False
+2-methoxyethanol,,,,3,85,False
+"2-methyl-2,4-pentanediol",,,,3,0,False
+"2-methyl-1,3-propanediol",,,,3,97,False
+N-methylacetamide,,,,3,125,False
+"1,3-propanediol",,,,3,86,False
+propionamide,,,,3,11,False
+tetraethylene glycol dimethyl ether,,,,3,0,False
+tetrahydrofurfuryl alcohol,,,,3,30,False
+triethylene glycol,,,,3,16,False
+triethylene glycol diacetate,,,,3,0,False
+triglyme,,,,3,0,False
+acetamide,,,,3,59,False
+propylene glycol,,,,3,96,False
+formamide,,,,3,74,False
+dimethyl sulfoxide,,,,3,104,False
+glycerol,,,,6,40,False
+dimethyl sulfoxide,,,,6,95,False
+ethylene glycol,,,,6,85,False
+formamide,,,,6,20,False
+2-methoxyethanol,,,,6,58,False
+"1,3-dihydroxyacetone",,,,6,65,False
+propylene glycol,,,,6,85,False
+diethylene glycol,,,,6,55,False
+acetamide,,,,6,10,False
+N-methylacetamide,,,,6,65,False
+"1,3-propanediol",,,,6,75,False
+"2,3-butanediol",,,,6,0,False
+"2-methyl-1,3-propanediol",,,,6,25,False
+dimethylacetamide,,,,6,0,False
+glycerol,,,,12,0,False
+dimethyl sulfoxide,,,,12,0,False
+propylene glycol,,,,12,0,False
+ethylene glycol,,,,12,95,False
+formamide,,,,12,0,False
+diethylene glycol,,,,12,0,False
+acetamide,,,,12,0,False
+N-methylacetamide,,,,12,0,False
+"1,3-propanediol",,,,12,10,False
+"2,3-butanediol",,,,12,0,False
+2-methoxyethanol,,,,12,0,False
+"1,3-dihydroxyacetone",,,,12,75,False
+dimethylacetamide,,,,12,0,False
+"2-methyl-1,3-propanediol",,,,12,0,False
+glycerol,dimethyl sulfoxide,,,6,75,True
+glycerol,propylene glycol,,,6,88,True
+glycerol,ethylene glycol,,,6,78,True
+glycerol,formamide,,,6,65,True
+glycerol,diethylene glycol,,,6,82,True
+glycerol,acetamide,,,6,75,True
+glycerol,N-methylacetamide,,,6,72,True
+glycerol,"1,3-propanediol",,,6,73,True
+glycerol,"2,3-butanediol",,,6,73,True
+glycerol,2-methoxyethanol,,,6,50,True
+glycerol,"2-methyl-1,3-propanediol",,,6,53,True
+glycerol,formamide,,,12,95,True
+glycerol,ethylene glycol,,,12,75,True
+glycerol,propylene glycol,,,12,0,True
+glycerol,dimethyl sulfoxide,,,12,10,True
+glycerol,"1,3-dihydroxyacetone",,,12,35,True

@@ -1,0 +1,40 @@
+# data + results (regenerable)
+data/raw/*
+data/processed/*
+data/.cache/
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+# Hand-curated Higgins CSVs are NOT regenerable from a download; track them.
+!data/raw/higgins_jan2025.csv
+!data/raw/higgins_dec2025.csv
+!data/raw/higgins_dec2025_build.py
+results/figures/*
+results/candidates/*
+!results/figures/.gitkeep
+!results/candidates/.gitkeep
+results/summary.json
+results/results_table.csv
+results.zip
+
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# model artifacts
+*.pt
+*.ckpt
+*.bin
+*.safetensors
+checkpoints/
+
+# misc
+.DS_Store
+.env
+.venv/
+venv/
+wandb/
+mlruns/
+.matplotlib_cache/
