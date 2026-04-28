@@ -1,0 +1,14 @@
+# Phase 1 Day 2+ — deep-learning extras.
+# Install AFTER the base requirements.txt and verify it succeeded before
+# moving on. On Colab, deepchem can conflict with pre-installed torch/jax;
+# install order: base -> deep-learning -> deepchem.
+
+# Deep learning (Phase 1 Day 2)
+torch>=2.1
+transformers>=4.40
+peft>=0.10
+accelerate>=0.27
+
+# DeepChem for Tox21 auxiliary task (Phase 1 Day 2 onwards).
+# Optional even within Day 2 -- pipeline degrades gracefully if it fails.
+deepchem>=2.8

@@ -24,19 +24,24 @@ What runs today:
 ## Quickstart
 
 ```bash
+# Phase 1 Day 1 base deps (rdkit, pubchempy, pandas, scikit-learn, ...)
 pip install -r requirements.txt
 
+# Phase 1 Day 2+ deep-learning extras (torch, transformers, peft, deepchem)
+# Install only when you reach Day 2; deepchem is conflict-prone on Colab.
+# pip install -r requirements-deep.txt
+
 # Build consolidated dataset + audit (data/processed/audit.json):
-python -m src.data
+python -m src.data --skip-tox21
 
 # Faster first run (skip slow PubChem CAS resolution for FDA IID):
-python -m src.data --skip-fda --skip-tox21
+python -m src.data --skip-tox21 --skip-fda
 
 # Train RF on all available tasks:
 python -m src.train --model rf --seed 0
 ```
 
-Run end-to-end on Colab: open `colab_runner.ipynb` and execute top-to-bottom.
+Run end-to-end on Colab: open `colab_runner.ipynb` and execute top-to-bottom. The notebook installs `requirements.txt` only and verifies imports before running the pipeline.
 
 ## Data
 

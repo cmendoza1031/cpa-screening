@@ -48,25 +48,49 @@ def seed_everything(seed: int) -> None:
         pass
 
 
+_RDKIT_READY = False
+
+
+def _ensure_rdkit() -> None:
+    """Import RDKit lazily and fail LOUDLY if it isn't installed.
+
+    Previous versions silently caught ImportError inside canonical_smiles(),
+    which on a fresh Colab where rdkit failed to install made every SMILES
+    look like 'unparseable' (0 valid) instead of 'rdkit missing'.
+    """
+    global _RDKIT_READY
+    if _RDKIT_READY:
+        return
+    try:
+        from rdkit import RDLogger
+
+        RDLogger.DisableLog("rdApp.*")
+    except ImportError as e:
+        raise ImportError(
+            "rdkit is required (pip install rdkit). On Colab, run "
+            "'pip install rdkit' BEFORE running the data pipeline; if you "
+            "see version conflicts with deepchem/torch, install the base "
+            "requirements first (requirements.txt) and the deep-learning "
+            "extras (requirements-deep.txt) only when you reach Phase 1 Day 2."
+        ) from e
+    _RDKIT_READY = True
+
+
 def canonical_smiles(smiles: str) -> Optional[str]:
     """Return RDKit-canonical SMILES, or None if RDKit can't parse it.
 
-    None is returned (rather than raising) so callers can log+skip rather than
-    fabricate. We never invent SMILES.
+    Raises ImportError if rdkit is missing (callers want this loud, not silent).
+    Returns None only when rdkit is available and the SMILES truly fails to parse.
     """
     if smiles is None:
         return None
     s = smiles.strip()
     if not s:
         return None
-    try:
-        from rdkit import Chem
-        from rdkit import RDLogger
+    _ensure_rdkit()
+    from rdkit import Chem
 
-        RDLogger.DisableLog("rdApp.*")
-        mol = Chem.MolFromSmiles(s)
-        if mol is None:
-            return None
-        return Chem.MolToSmiles(mol, canonical=True)
-    except Exception:
+    mol = Chem.MolFromSmiles(s)
+    if mol is None:
         return None
+    return Chem.MolToSmiles(mol, canonical=True)
