@@ -18,7 +18,9 @@ log = get_logger("eval")
 
 
 def regression_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
-    """MAE, RMSE, R^2, Spearman. Returns NaNs for tiny n with no variance."""
+    """MAE, RMSE, R^2, Spearman. Robust to empty input, NaN predictions
+    (from a freshly-initialized network mid-training), and zero-variance.
+    """
     from scipy.stats import spearmanr
     from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
@@ -27,11 +29,17 @@ def regression_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
     if y_true.size == 0:
         return {"n": 0, "mae": float("nan"), "rmse": float("nan"),
                 "r2": float("nan"), "spearman": float("nan")}
-    mae = float(mean_absolute_error(y_true, y_pred))
-    rmse = float(np.sqrt(mean_squared_error(y_true, y_pred)))
-    if y_true.size >= 2 and np.std(y_true) > 0:
-        r2 = float(r2_score(y_true, y_pred))
-        rho_res = spearmanr(y_true, y_pred)
+    finite = np.isfinite(y_true) & np.isfinite(y_pred)
+    n_finite = int(finite.sum())
+    if n_finite == 0:
+        return {"n": int(y_true.size), "mae": float("nan"), "rmse": float("nan"),
+                "r2": float("nan"), "spearman": float("nan")}
+    yt, yp = y_true[finite], y_pred[finite]
+    mae = float(mean_absolute_error(yt, yp))
+    rmse = float(np.sqrt(mean_squared_error(yt, yp)))
+    if n_finite >= 2 and np.std(yt) > 0:
+        r2 = float(r2_score(yt, yp))
+        rho_res = spearmanr(yt, yp)
         rho = float(rho_res.statistic if hasattr(rho_res, "statistic") else rho_res[0])
     else:
         r2 = float("nan")

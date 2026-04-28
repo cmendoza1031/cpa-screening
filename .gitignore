@@ -38,4 +38,5 @@ venv/
 wandb/
 mlruns/
 .matplotlib_cache/
+.hf_cache/
 /runs/

@@ -5,7 +5,12 @@ from .dolmen import load_dolmen
 from .fda_iid import load_fda_iid
 from .higgins import load_higgins_dec2025, load_higgins_jan2025
 from .pubchem import batch_lookup, cache_stats, name_or_cas_to_smiles
-from .splits import assign_split, random_split_by_smiles
+from .splits import (
+    assign_split,
+    kfold_split_by_smiles,
+    loo_split_by_smiles,
+    random_split_by_smiles,
+)
 from .tox21 import load_tox21
 
 __all__ = [
@@ -20,5 +25,7 @@ __all__ = [
     "batch_lookup",
     "cache_stats",
     "random_split_by_smiles",
+    "kfold_split_by_smiles",
+    "loo_split_by_smiles",
     "assign_split",
 ]

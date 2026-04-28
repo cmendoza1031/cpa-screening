@@ -84,6 +84,48 @@ def assign_split(df: pd.DataFrame, splits: dict[str, set[str]], smiles_col: str 
     return out
 
 
+def kfold_split_by_smiles(
+    smiles_list: Iterable[str],
+    k: int = 5,
+    seed: int = 0,
+) -> list[tuple[set[str], set[str]]]:
+    """Compound-level k-fold CV. Returns list of (train_smiles, test_smiles) sets.
+
+    Deterministic: a given (seed, k) on the same canonical SMILES list always
+    produces the same fold assignment. Reproducible across runs without
+    relying on numpy RNG state ordering.
+    """
+    if k < 2:
+        raise ValueError(f"k must be >=2, got {k}")
+    unique = sorted(set(s for s in smiles_list if s))
+    n = len(unique)
+    if n == 0:
+        return []
+    # Stable hash-based fold assignment on (seed, smiles)
+    folds: list[list[str]] = [[] for _ in range(k)]
+    for s in unique:
+        b = _stable_bucket(s, seed=seed, buckets=k)
+        folds[b].append(s)
+    out = []
+    for fi in range(k):
+        test_set = set(folds[fi])
+        train_set = set(unique) - test_set
+        out.append((train_set, test_set))
+    log.info("k-fold split (seed=%d, k=%d): fold sizes = %s",
+             seed, k, [len(f) for f in folds])
+    return out
+
+
+def loo_split_by_smiles(smiles_list: Iterable[str]) -> list[tuple[set[str], set[str]]]:
+    """Leave-one-out CV. Each fold holds out exactly one compound.
+
+    Order is sorted-canonical-SMILES so it's deterministic. Used for the
+    RF-only secondary analysis on permeability where n=16.
+    """
+    unique = sorted(set(s for s in smiles_list if s))
+    return [(set(unique) - {s}, {s}) for s in unique]
+
+
 def cluster_aware_split(*args, **kwargs):
     """Phase 2 placeholder. Tanimoto/Morgan-FP cluster-aware split lands in Phase 2."""
     raise NotImplementedError("cluster-aware split is implemented in Phase 2")

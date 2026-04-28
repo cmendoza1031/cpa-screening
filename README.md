@@ -8,9 +8,11 @@ The point: screen virtually before screening at the bench.
 
 ---
 
-## Status: Phase 1 Day 1 (data + RF baseline)
+## Status: Phase 1 Day 2 (ChemBERTa+LoRA, single seed, rank 8)
 
-Phase 1 Day 1 is complete. ChemBERTa+LoRA, cluster-aware splits, deep-ensemble uncertainty, and FDA IID Pareto ranking land in subsequent phases (see [plan](.cursor/plans/) and the **Roadmap** section below).
+Phase 1 Day 1 (data + RF baseline) is complete and verified on Colab. Phase 1 Day 2 (ChemBERTa-2 + LoRA at rank 8, single seed) is wired up and locally smoke-tested; the full GPU training run is what the user reviews at PAUSE POINT 2 before Phase 2 starts.
+
+> **Eval scheme:** `iri` is on a 70/15/15 train/val/test split (n=303 supports it). The small Higgins tasks use 5-fold CV — random splits at n=22/16 made test sets too small to read. RF additionally reports LOO-CV permeability as a sanity check; the gap between LOO and 5-fold is itself an honest read on scaffold-leakage. Full rationale in [RATIONALE.md](RATIONALE.md).
 
 What runs today:
 
@@ -69,27 +71,26 @@ Dedup is on RDKit-canonical SMILES. PubChem misses are logged to `data/.cache/pu
 - **ChemBERTa+LoRA (Day 2)**: `DeepChem/ChemBERTa-77M-MLM`, mean-pool, three regression heads + Tox21 auxiliary classification head. LoRA on q/k/v with rank ∈ {4, 8, 16}.
 - **Splits (v1)**: deterministic random 70/15/15 keyed on canonical SMILES, hashed with the seed (so the same compound always lands in the same split across tasks). Cluster-aware splits (Tanimoto on Morgan FP, threshold 0.6) land in Phase 2 — gap between random and cluster-aware splits is the realistic generalization signal.
 
-## Results (Phase 1 Day 1, random split, seed 0)
+## Results (RF baseline, seed 0)
 
 ```bash
 python -m src.train --model rf --seed 0
 ```
 
-Numbers below are from a local CPU run. They are noisy and that's the point — Phase 1 Day 1 is the honest baseline that ChemBERTa+LoRA must beat. Toxicity and permeability tasks are tiny (n=22 and n=16 respectively); random splits land 0–2 compounds in test for those, which makes test R² and MAE essentially uninterpretable. Spearman on val is the more meaningful signal.
+| Model | Task | Scheme | Split | n | MAE | RMSE | R² | Spearman |
+|---|---|---|---|---|---|---|---|---|
+| RF | iri | 70/15/15 | val | 46 | 20.9 | 27.3 | 0.07 | **0.42** |
+| RF | iri | 70/15/15 | test | 40 | 23.4 | 28.4 | 0.09 | **0.37** |
+| RF | toxicity | 5-fold-CV | OOF | 22 | 19.8 | 23.4 | 0.23 | **0.35** |
+| RF | permeability | 5-fold-CV | OOF | 16 | 14.0 | 17.5 | -0.08 | 0.16 |
+| RF | permeability | LOO-CV | OOF | 16 | 12.9 | 16.6 | 0.02 | **0.38** |
 
-| Model | Task | Split | n | MAE | RMSE | R² | Spearman |
-|---|---|---|---|---|---|---|---|
-| RF (seed 0) | iri | train | 217 | 8.7 | 11.1 | 0.84 | 0.93 |
-| RF (seed 0) | iri | val | 46 | 20.9 | 27.3 | 0.07 | 0.42 |
-| RF (seed 0) | iri | test | 40 | 23.4 | 28.4 | 0.09 | 0.37 |
-| RF (seed 0) | permeability | train | 12 | 5.8 | 6.7 | 0.87 | 0.96 |
-| RF (seed 0) | permeability | val | 4 | 6.2 | 6.4 | 0.26 | 1.00 |
-| RF (seed 0) | permeability | test | 0 | — | — | — | — |
-| RF (seed 0) | toxicity | train | 14 | 5.3 | 6.4 | 0.91 | 0.99 |
-| RF (seed 0) | toxicity | val | 6 | 25.9 | 28.9 | 0.35 | 0.81 |
-| RF (seed 0) | toxicity | test | 2 | 22.6 | 25.4 | -1.87 | 1.00 |
+Read:
+- **IRI** has clear ranking signal (Spearman 0.37 on a 40-compound test). Below the train R² of 0.84, but on the right side of zero — the model captures rank order even on held-out compounds.
+- **Toxicity** 5-fold CV produces a stable Spearman 0.35 across all 22 compounds. Better than the n=2 single-test-split number (Spearman 1.00 was meaningless).
+- **Permeability** is a lesson in itself: the LOO Spearman (0.38) is more than 2× the 5-fold Spearman (0.16). That gap is **fold leakage** — at n=16, LOO with random folds lets each held-out compound sit next to ~15 close neighbors. The 5-fold number is the more honest read; LOO flatters the model. We report both and explain the gap.
 
-Read: train metrics are strong everywhere because RF can fit Morgan fingerprints to small datasets easily; val/test gaps are large, especially for IRI (where the dataset is largest and the gap is therefore the most reliable). The 5-seed deep ensemble in Phase 2 will smooth the small-N noise and produce calibrated 95% prediction intervals.
+Phase 1 Day 2 (ChemBERTa+LoRA rank 8, single seed) results land here after the user's Colab run at PAUSE POINT 2.
 
 ## Repo layout
 

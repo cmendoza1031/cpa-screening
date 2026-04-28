@@ -118,6 +118,84 @@ class RFConfig:
     seed: int = 0
 
 
+def _fit_rf(X_train, y_train, config: RFConfig):
+    from sklearn.ensemble import RandomForestRegressor
+
+    model = RandomForestRegressor(
+        n_estimators=config.n_estimators,
+        max_features=config.max_features,
+        min_samples_leaf=config.min_samples_leaf,
+        n_jobs=config.n_jobs,
+        random_state=config.seed,
+    )
+    model.fit(X_train, y_train)
+    return model
+
+
+def train_rf_kfold(
+    long_df: pd.DataFrame,
+    task: str,
+    folds: list[tuple[set[str], set[str]]],
+    config: Optional[RFConfig] = None,
+) -> dict:
+    """Train an RF per fold and produce out-of-fold predictions.
+
+    folds: list of (train_smiles, test_smiles) sets. For 5-fold CV, list has
+    5 entries; for LOO it has n entries.
+
+    Returns a dict with:
+        n_folds, smi_oof, y_oof, yhat_oof, per_fold_metrics, scheme_label
+    """
+    config = config or RFConfig()
+    sub = long_df[long_df["task"] == task].dropna(subset=["value"])
+    if sub.empty:
+        log.warning("no data for task=%s; skipping CV", task)
+        return {}
+
+    smi_to_y = dict(zip(sub["smiles_canonical"], sub["value"]))
+
+    smi_oof: list[str] = []
+    y_oof: list[float] = []
+    yhat_oof: list[float] = []
+    per_fold = []
+
+    for fi, (train_set, test_set) in enumerate(folds):
+        train_smi = [s for s in train_set if s in smi_to_y]
+        test_smi = [s for s in test_set if s in smi_to_y]
+        if not train_smi or not test_smi:
+            continue
+        X_train, smi_train_kept = featurize(train_smi)
+        X_test, smi_test_kept = featurize(test_smi)
+        if X_train.shape[0] == 0 or X_test.shape[0] == 0:
+            continue
+        y_train = np.array([smi_to_y[s] for s in smi_train_kept])
+        y_test = np.array([smi_to_y[s] for s in smi_test_kept])
+        model = _fit_rf(X_train, y_train, config)
+        yhat = model.predict(X_test)
+        smi_oof.extend(smi_test_kept)
+        y_oof.extend(y_test.tolist())
+        yhat_oof.extend(yhat.tolist())
+        per_fold.append({
+            "fold": fi,
+            "n_train": int(len(y_train)),
+            "n_test": int(len(y_test)),
+        })
+        log.info(
+            "task=%s fold=%d  train=%d test=%d",
+            task, fi, len(y_train), len(y_test),
+        )
+
+    return {
+        "task": task,
+        "scheme": "kfold" if len(folds) <= 10 else "loo",
+        "n_folds": len(folds),
+        "smi_oof": smi_oof,
+        "y_oof": np.array(y_oof),
+        "yhat_oof": np.array(yhat_oof),
+        "per_fold_metrics": per_fold,
+    }
+
+
 def train_rf_per_task(
     long_df: pd.DataFrame,
     splits: dict[str, set[str]],
