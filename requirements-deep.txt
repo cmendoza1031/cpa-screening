@@ -1,18 +1,27 @@
-# Phase 1 Day 2+ — deep-learning extras.
-# Install AFTER the base requirements.txt and verify it succeeded before
-# moving on. On Colab, deepchem can conflict with pre-installed torch/jax;
-# install order: base -> deep-learning -> deepchem.
+# Phase 1 Day 2+ deep-learning extras.
+#
+# Install AFTER the base requirements.txt:
+#     pip install -U -r requirements-deep.txt
+#
+# The -U flag is important on Colab: torch / transformers / peft / torchao
+# are pre-installed at versions that fight each other (e.g., peft 0.19's LoRA
+# dispatcher requires torchao >= 0.16, but Colab pre-installs torchao 0.10
+# which raises ImportError when peft probes for it). Without -U, pip leaves
+# the stale versions in place and training crashes.
+#
+# DeepChem is NOT in this file because (a) it has no Python 3.12 wheel on
+# PyPI which causes pip to abort the entire resolution before any package
+# is installed, and (b) Phase 1 Day 2 doesn't actually use it (Tox21 aux
+# head is off). Phase 2 will move Tox21 loading to a wheel-friendly path
+# (direct CSV download from MoleculeNet) so we don't need deepchem at all.
 
-# Deep learning (Phase 1 Day 2)
 torch>=2.1
 transformers>=4.40
 peft>=0.10
 accelerate>=0.27
-# torchao>=0.16 required by recent peft LoRA dispatcher; Colab pre-installs
-# 0.10.0 which is_torchao_available() rejects with ImportError (rather than
-# returning False), killing get_peft_model(). Force the upgrade.
-torchao>=0.16
 
-# DeepChem for Tox21 auxiliary task (Phase 1 Day 2 onwards).
-# Optional even within Day 2 -- pipeline degrades gracefully if it fails.
-deepchem>=2.8
+# torchao>=0.16 is required by recent peft (>=0.18) LoRA dispatcher.
+# is_torchao_available() *raises* (rather than returning False) when torchao
+# is older than 0.16, killing get_peft_model() before any LoRA adapter is
+# created. Pinning here forces the upgrade past Colab's pre-installed 0.10.0.
+torchao>=0.16
