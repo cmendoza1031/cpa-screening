@@ -43,17 +43,57 @@ CPA_HBA_MIN = 2
 
 
 def _download(force: bool = False) -> Path:
+    """Download the IID file. The FDA URL actually serves a ZIP archive
+    containing IIR_OCOMM.csv (and an .xls duplicate, plus a change log).
+    We extract the CSV and write it to data/raw/fda_iid.txt so the rest of
+    the pipeline sees a regular CSV.
+    """
     if RAW_PATH.exists() and not force:
-        log.info("fda_iid already cached at %s", RAW_PATH)
-        return RAW_PATH
+        # Validate the cached file: previous runs (before we knew the URL
+        # served a zip) wrote raw zip bytes here. If the cached file starts
+        # with PK\x03\x04 it's a zip pretending to be a CSV; re-download.
+        head = RAW_PATH.read_bytes()[:4]
+        if head == b"PK\x03\x04":
+            log.warning(
+                "cached fda_iid at %s is a zip (from a pre-fix run); "
+                "re-downloading and extracting the inner CSV.",
+                RAW_PATH,
+            )
+            RAW_PATH.unlink()
+        else:
+            log.info("fda_iid already cached at %s", RAW_PATH)
+            return RAW_PATH
     log.info("downloading FDA IID from %s", FDA_URL)
     headers = {
         "User-Agent": "cpa-screening/0.1 (research; mailto:noreply@example.org)"
     }
     r = requests.get(FDA_URL, headers=headers, timeout=60)
     r.raise_for_status()
-    RAW_PATH.write_bytes(r.content)
-    log.info("wrote %s (%d bytes)", RAW_PATH, len(r.content))
+    payload = r.content
+    log.info("downloaded %d bytes from FDA IID URL", len(payload))
+
+    # ZIP archives start with "PK\x03\x04". As of Jan 2026, FDA serves a zip;
+    # earlier the URL returned a plain text file. Handle both.
+    if payload[:4] == b"PK\x03\x04":
+        import io
+        import zipfile
+
+        with zipfile.ZipFile(io.BytesIO(payload)) as zf:
+            csv_names = [n for n in zf.namelist() if n.lower().endswith(".csv")
+                         and "change_log" not in n.lower()]
+            if not csv_names:
+                raise RuntimeError(
+                    f"FDA IID zip contains no main CSV; entries: {zf.namelist()}"
+                )
+            inner = csv_names[0]
+            log.info("FDA IID ships as ZIP; extracting %s (%d candidates: %s)",
+                     inner, len(csv_names), csv_names)
+            csv_bytes = zf.read(inner)
+        RAW_PATH.write_bytes(csv_bytes)
+        log.info("wrote %s (%d bytes, extracted from zip)", RAW_PATH, len(csv_bytes))
+    else:
+        RAW_PATH.write_bytes(payload)
+        log.info("wrote %s (%d bytes, plain CSV)", RAW_PATH, len(payload))
     return RAW_PATH
 
 
