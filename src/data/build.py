@@ -63,12 +63,30 @@ def build_dataset(
 
     Returns (long_df, audit_dict). Also writes data/processed/long.parquet
     and data/processed/audit.json.
+
+    Stale or empty caches are auto-invalidated. Specifically: if the cached
+    long.parquet is empty, or the cached audit lacks the 'iri' task that
+    DOLMEN should provide, we rebuild from sources. This guards against
+    poisoned caches from a previous failed run.
     """
     if LONG_PATH.exists() and AUDIT_PATH.exists() and not force_reprocess:
-        log.info("loading cached long dataset from %s", LONG_PATH)
         long_df = pd.read_parquet(LONG_PATH)
         audit = json.loads(AUDIT_PATH.read_text())
-        return long_df, audit
+        cache_is_stale = (
+            len(long_df) == 0
+            or "iri" not in audit.get("per_task", {})
+        )
+        if cache_is_stale:
+            log.warning(
+                "cached long dataset at %s looks stale "
+                "(rows=%d, tasks=%s); rebuilding from sources",
+                LONG_PATH,
+                len(long_df),
+                list(audit.get("per_task", {}).keys()),
+            )
+        else:
+            log.info("loading cached long dataset from %s (%d rows)", LONG_PATH, len(long_df))
+            return long_df, audit
 
     rows: list[pd.DataFrame] = []
     n_dropped: dict[str, int] = {}

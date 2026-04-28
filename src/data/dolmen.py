@@ -100,10 +100,22 @@ def load_dolmen(force_download: bool = False, force_reprocess: bool = False) -> 
     """Return a DataFrame with one row per DOLMEN compound.
 
     Caches to data/processed/dolmen.parquet; pass force_reprocess=True to rebuild.
+    Empty caches (0 rows) are auto-invalidated -- they're a sign of a previous
+    failed run (e.g. rdkit ImportError) that wrote a poisoned parquet.
     """
     if PROCESSED_PATH.exists() and not force_reprocess:
-        log.info("loading cached dolmen parquet from %s", PROCESSED_PATH)
-        return pd.read_parquet(PROCESSED_PATH)
+        cached = pd.read_parquet(PROCESSED_PATH)
+        if len(cached) == 0:
+            log.warning(
+                "cached dolmen parquet at %s is empty (0 rows); ignoring "
+                "and re-processing. This usually means a previous run failed "
+                "with a missing dependency (rdkit) and wrote an empty cache.",
+                PROCESSED_PATH,
+            )
+            PROCESSED_PATH.unlink()
+        else:
+            log.info("loading cached dolmen parquet from %s (%d rows)", PROCESSED_PATH, len(cached))
+            return cached
 
     paths = _download(force=force_download)
     parts: list[pd.DataFrame] = []
@@ -118,6 +130,15 @@ def load_dolmen(force_download: bool = False, force_reprocess: bool = False) -> 
         n_before,
         len(df),
     )
+
+    if len(df) == 0:
+        raise RuntimeError(
+            "DOLMEN produced 0 valid rows after parsing. The CSVs were "
+            "downloaded successfully, so this almost certainly means RDKit "
+            "is broken (every SMILES failed to canonicalize). Verify with "
+            "`python -c 'from rdkit import Chem; print(Chem.MolFromSmiles(\"CCO\"))'`. "
+            "Refusing to write an empty parquet; fix RDKit and re-run."
+        )
 
     df.to_parquet(PROCESSED_PATH, index=False)
     log.info("wrote %s (%d rows)", PROCESSED_PATH, len(df))
