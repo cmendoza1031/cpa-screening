@@ -8,6 +8,10 @@ torch>=2.1
 transformers>=4.40
 peft>=0.10
 accelerate>=0.27
+# torchao>=0.16 required by recent peft LoRA dispatcher; Colab pre-installs
+# 0.10.0 which is_torchao_available() rejects with ImportError (rather than
+# returning False), killing get_peft_model(). Force the upgrade.
+torchao>=0.16
 
 # DeepChem for Tox21 auxiliary task (Phase 1 Day 2 onwards).
 # Optional even within Day 2 -- pipeline degrades gracefully if it fails.
