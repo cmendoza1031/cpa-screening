@@ -53,11 +53,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--lora-rank", type=int, default=8)
     p.add_argument("--epochs", type=int, default=30)
     p.add_argument("--batch-size", type=int, default=32)
-    # Lowered from 1e-4 (spec default) to 5e-5 after the previous Colab run
-    # produced ~95% NaN-grad skip rate. 5e-5 is the standard fine-tuning lr
-    # for transformer LoRA at this model size; combined with bf16 autocast
-    # this should give stable training on Blackwell / H100 / A100 / T4.
-    p.add_argument("--lr", type=float, default=5e-5)
+    # 1e-4 (spec) -> 5e-5 -> 2e-5. The 5e-5 + bf16 + per-task-weighted-loss
+    # config still produced ~80% NaN-grad skip on Blackwell. Combined with
+    # the uniform per-sample loss aggregation + nan_to_num + clip_grad_value
+    # changes in chemberta_lora.py, 2e-5 should give stable training.
+    p.add_argument("--lr", type=float, default=2e-5)
     p.add_argument("--weight-decay", type=float, default=0.01)
     p.add_argument("--patience", type=int, default=5)
     p.add_argument("--max-length", type=int, default=128)

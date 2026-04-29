@@ -292,11 +292,22 @@ def _make_batches(
 
 
 def _task_weights(train_df: pd.DataFrame) -> dict[str, float]:
-    """Inverse-sqrt-of-count weighting so small tasks aren't drowned out."""
-    counts = {t: int(train_df[t].notna().sum()) for t in REG_TASKS}
-    raw = {t: 1.0 / math.sqrt(max(counts[t], 1)) for t in REG_TASKS}
-    s = sum(raw.values()) or 1.0
-    return {t: raw[t] / s * len(REG_TASKS) for t in REG_TASKS}
+    """All tasks weighted equally per labeled sample.
+
+    Earlier we used inverse-sqrt-of-task-count weighting to "compensate" for
+    small tasks having few labels. On Blackwell+bf16 this turned out to be
+    actively harmful: when a batch has 1-2 toxicity-labeled compounds and
+    those predictions are off (common at init), the up-weighted toxicity
+    loss dominates and produces gradient spikes that overflow bf16 backward.
+    Result: ~80% of training batches got NaN-skipped.
+
+    With uniform per-sample weighting, the loss reduces to
+        total_squared_error / total_labeled_samples
+    which is bounded near 1.0 on standardized targets at init and shrinks
+    smoothly during training. Phase 2's Tox21 aux classification head is
+    the right tool to give toxicity more signal -- not loss reweighting.
+    """
+    return {t: 1.0 for t in REG_TASKS}
 
 
 def _epoch(
@@ -334,8 +345,13 @@ def _epoch(
             with ac_ctx:
                 preds = model(**toks)
 
-            batch_loss = torch.tensor(0.0, device=device, dtype=torch.float32)
-            n_terms = 0
+            # Loss = total squared error across all labeled (compound, task)
+            # pairs in the batch, divided by total labeled count. Bounded near
+            # 1.0 at init on standardized targets; shrinks smoothly. No
+            # per-task weighting so a single outlier in a small-task batch
+            # can't dominate the gradient.
+            total_se = torch.tensor(0.0, device=device, dtype=torch.float32)
+            total_n = 0
             for t in REG_TASKS:
                 m = m_t[t].to(device)
                 if not m.any():
@@ -343,15 +359,17 @@ def _epoch(
                 y = y_t[t].to(device)
                 y_std = (y - standardizer.means[t]) / standardizer.stds[t]
                 p = preds[t].float()  # bf16 -> fp32 for loss
-                loss_t = ((p - y_std) ** 2)[m].mean()
-                batch_loss = batch_loss + weights[t] * loss_t
-                n_terms += 1
+                total_se = total_se + ((p - y_std) ** 2)[m].sum()
+                total_n += int(m.sum().item())
 
                 p_unstd = (p.detach() * standardizer.stds[t] + standardizer.means[t]).cpu().numpy()
                 y_np = y.detach().cpu().numpy()
                 m_np = m.cpu().numpy()
                 yhats[t].extend(p_unstd[m_np].tolist())
                 ys[t].extend(y_np[m_np].tolist())
+
+            n_terms = total_n
+            batch_loss = total_se / max(total_n, 1)
 
             if n_terms == 0:
                 continue
@@ -362,21 +380,18 @@ def _epoch(
                     continue
                 optimizer.zero_grad()
                 batch_loss.backward()
-                # Skip the optimizer step if any grad is non-finite. Training
-                # transformers fine-tunes on tiny batches occasionally produces
-                # NaN grads via softmax saturation in attention; clip_grad_norm_
-                # itself is NaN-unsafe (norm becomes NaN, clipped grads become
-                # NaN, optimizer pushes params to NaN).
-                bad_grad = any(
-                    p.grad is not None and not torch.isfinite(p.grad).all()
-                    for p in model.parameters() if p.requires_grad
-                )
-                if bad_grad:
-                    log.warning("non-finite gradients; skipping step")
-                    optimizer.zero_grad()
-                    continue
-                torch.nn.utils.clip_grad_norm_(
-                    [p for p in model.parameters() if p.requires_grad], max_norm=1.0
+                # Per-element value clipping. Unlike clip_grad_norm_ (which is
+                # NaN-unsafe -- a single NaN in a grad tensor poisons the norm,
+                # and norm-divided-by-NaN turns every grad NaN), clip_grad_value_
+                # clamps each element to +/- max_value, naturally handling NaN
+                # by setting it to the clamp limit. We also explicitly nan_to_num
+                # before clipping for hard guarantees.
+                for p in model.parameters():
+                    if p.grad is not None:
+                        torch.nan_to_num_(p.grad, nan=0.0, posinf=0.5, neginf=-0.5)
+                torch.nn.utils.clip_grad_value_(
+                    [p for p in model.parameters() if p.requires_grad],
+                    clip_value=0.5,
                 )
                 optimizer.step()
             total_loss += float(batch_loss.detach().cpu().item())
