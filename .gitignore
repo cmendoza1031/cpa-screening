@@ -12,6 +12,12 @@ results/figures/*
 results/candidates/*
 !results/figures/.gitkeep
 !results/candidates/.gitkeep
+# Track the README figures so GitHub renders them inline
+!results/figures/spearman_summary.png
+!results/figures/pareto_2d_top20.png
+# Track the candidate output so reviewers can inspect without running
+!results/candidates/top20.csv
+!results/candidates/all_scored.csv
 results/summary.json
 results/results_table.csv
 results.zip
