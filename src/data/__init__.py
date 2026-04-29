@@ -7,6 +7,7 @@ from .higgins import load_higgins_dec2025, load_higgins_jan2025
 from .pubchem import batch_lookup, cache_stats, name_or_cas_to_smiles
 from .splits import (
     assign_split,
+    cluster_aware_kfold_split,
     kfold_split_by_smiles,
     loo_split_by_smiles,
     random_split_by_smiles,
@@ -27,5 +28,6 @@ __all__ = [
     "random_split_by_smiles",
     "kfold_split_by_smiles",
     "loo_split_by_smiles",
+    "cluster_aware_kfold_split",
     "assign_split",
 ]

@@ -126,6 +126,136 @@ def loo_split_by_smiles(smiles_list: Iterable[str]) -> list[tuple[set[str], set[
     return [(set(unique) - {s}, {s}) for s in unique]
 
 
+def _morgan_fp_array(smiles_list: list[str], radius: int = 2, n_bits: int = 2048) -> "np.ndarray":
+    """Compute Morgan fingerprints for a list of canonical SMILES.
+
+    Returns an (n, n_bits) numpy array of float32 0/1 values; rows for
+    SMILES that fail RDKit parsing are zeros (rare since these have already
+    been canonicalized upstream).
+    """
+    from rdkit.Chem import rdFingerprintGenerator
+    from rdkit import Chem
+    from rdkit.DataStructs import ConvertToNumpyArray
+
+    gen = rdFingerprintGenerator.GetMorganGenerator(radius=radius, fpSize=n_bits)
+    arr = np.zeros((len(smiles_list), n_bits), dtype=np.float32)
+    for i, s in enumerate(smiles_list):
+        mol = Chem.MolFromSmiles(s)
+        if mol is None:
+            continue
+        fp = gen.GetFingerprint(mol)
+        out = np.zeros(n_bits, dtype=np.float32)
+        ConvertToNumpyArray(fp, out)
+        arr[i] = out
+    return arr
+
+
+def _butina_clusters(
+    smiles_list: list[str],
+    threshold: float = 0.6,
+    radius: int = 2,
+    n_bits: int = 2048,
+) -> list[list[int]]:
+    """Cluster compounds via Butina / Taylor algorithm on Morgan-FP Tanimoto.
+
+    Two compounds are in the same cluster if their Tanimoto similarity
+    exceeds `threshold`. Returns a list of clusters where each cluster is a
+    list of compound indices (into the input smiles_list).
+
+    Implementation note: RDKit's Butina cluster wants pairwise distance
+    matrix as a 1-D condensed list. Distance = 1 - Tanimoto. We compute
+    fingerprints once, then bulk-similarity to avoid Python-loop overhead.
+    """
+    from rdkit import DataStructs
+    from rdkit.Chem import rdFingerprintGenerator
+    from rdkit import Chem
+    from rdkit.ML.Cluster import Butina
+
+    gen = rdFingerprintGenerator.GetMorganGenerator(radius=radius, fpSize=n_bits)
+    fps = []
+    for s in smiles_list:
+        mol = Chem.MolFromSmiles(s)
+        if mol is None:
+            # Use empty fp so this compound is dissimilar to everything.
+            fps.append(gen.GetFingerprint(Chem.MolFromSmiles("C")))
+        else:
+            fps.append(gen.GetFingerprint(mol))
+
+    # Condensed pairwise distance list: [d(0,1), d(0,2), ..., d(n-2, n-1)]
+    n = len(fps)
+    dists: list[float] = []
+    for i in range(1, n):
+        sims = DataStructs.BulkTanimotoSimilarity(fps[i], fps[:i])
+        dists.extend(1.0 - s for s in sims)
+
+    clusters = Butina.ClusterData(
+        dists, n, distThresh=1.0 - threshold, isDistData=True,
+    )
+    return [list(c) for c in clusters]
+
+
+def cluster_aware_kfold_split(
+    smiles_list: Iterable[str],
+    k: int = 5,
+    threshold: float = 0.6,
+    seed: int = 0,
+) -> list[tuple[set[str], set[str]]]:
+    """Cluster-aware k-fold split: assigns whole clusters to folds so no
+    cluster spans train/test boundaries.
+
+    Algorithm (greedy bin-packing): cluster via Butina, then assign each
+    cluster to whichever fold currently has the fewest compounds. This
+    produces approximately balanced folds while honoring the "no scaffold
+    leakage" constraint.
+
+    The seed shuffles the cluster ordering before greedy assignment so
+    different seeds produce different (but still cluster-honoring) folds.
+    """
+    if k < 2:
+        raise ValueError(f"k must be >=2, got {k}")
+    unique = sorted(set(s for s in smiles_list if s))
+    if not unique:
+        return []
+
+    clusters = _butina_clusters(unique, threshold=threshold)
+    log.info(
+        "cluster split: %d clusters at Tanimoto>%g (sizes: max=%d median=%d singletons=%d)",
+        len(clusters),
+        threshold,
+        max((len(c) for c in clusters), default=0),
+        sorted(len(c) for c in clusters)[len(clusters) // 2] if clusters else 0,
+        sum(1 for c in clusters if len(c) == 1),
+    )
+
+    # Sort clusters by size descending; shuffle within size groups by seed
+    rng = np.random.default_rng(seed)
+    cluster_indices = list(range(len(clusters)))
+    cluster_indices.sort(key=lambda i: -len(clusters[i]))
+    rng.shuffle(cluster_indices)
+    # Re-sort with shuffle preserved within ties: stable since equal sizes
+    # got rng-randomized order
+    cluster_indices.sort(key=lambda i: -len(clusters[i]))
+
+    fold_smiles: list[set[str]] = [set() for _ in range(k)]
+    for ci in cluster_indices:
+        # Assign to currently smallest fold
+        target = min(range(k), key=lambda f: len(fold_smiles[f]))
+        for compound_idx in clusters[ci]:
+            fold_smiles[target].add(unique[compound_idx])
+
+    out = []
+    all_smiles = set(unique)
+    for fi in range(k):
+        test_set = fold_smiles[fi]
+        train_set = all_smiles - test_set
+        out.append((train_set, test_set))
+    log.info(
+        "cluster-aware k-fold (seed=%d, k=%d, threshold=%g): fold sizes = %s",
+        seed, k, threshold, [len(f) for f in fold_smiles],
+    )
+    return out
+
+
 def cluster_aware_split(*args, **kwargs):
-    """Phase 2 placeholder. Tanimoto/Morgan-FP cluster-aware split lands in Phase 2."""
-    raise NotImplementedError("cluster-aware split is implemented in Phase 2")
+    """Backward-compat alias to cluster_aware_kfold_split."""
+    return cluster_aware_kfold_split(*args, **kwargs)

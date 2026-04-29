@@ -21,6 +21,7 @@ import pandas as pd
 
 from .data import (
     build_dataset,
+    cluster_aware_kfold_split,
     kfold_split_by_smiles,
     loo_split_by_smiles,
     random_split_by_smiles,
@@ -46,8 +47,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--model", choices=["rf", "chemberta"], default="rf")
     p.add_argument("--task", default="all", help="all | toxicity | permeability | iri")
     p.add_argument("--seed", type=int, default=0)
-    p.add_argument("--split-mode", choices=["random"], default="random",
-                   help="random for v1; cluster-aware lands in Phase 2")
+    p.add_argument("--split-mode", choices=["random", "cluster"], default="random",
+                   help="random or Tanimoto-cluster-aware k-fold (Phase 2)")
+    p.add_argument("--cluster-threshold", type=float, default=0.6,
+                   help="Tanimoto threshold for Butina clustering when --split-mode=cluster")
+    p.add_argument("--n-seeds", type=int, default=1,
+                   help="ensemble size; >1 runs Phase 2 deep-ensemble eval")
     p.add_argument("--output-dir", type=Path, default=RESULTS_DIR)
     # ChemBERTa-only:
     p.add_argument("--lora-rank", type=int, default=8)
@@ -273,13 +278,18 @@ def run_chemberta(args: argparse.Namespace) -> dict:
     long_df, audit = build_dataset()
     _print_audit_summary(audit)
 
-    rows = train_chemberta_multitask(long_df, args)
+    if args.n_seeds > 1:
+        rows = run_chemberta_ensemble(long_df, args)
+    else:
+        rows = train_chemberta_multitask(long_df, args)
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     summary = {
         "model": "chemberta",
         "seed": args.seed,
         "lora_rank": args.lora_rank,
+        "n_seeds": args.n_seeds,
+        "split_mode": args.split_mode,
         "audit": audit,
         "metrics": rows,
     }
@@ -292,13 +302,122 @@ def run_chemberta(args: argparse.Namespace) -> dict:
     return summary
 
 
+def _build_folds(args, smiles: list[str], k: int):
+    if args.split_mode == "cluster":
+        return cluster_aware_kfold_split(
+            smiles, k=k, threshold=args.cluster_threshold, seed=args.seed,
+        )
+    return kfold_split_by_smiles(smiles, k=k, seed=args.seed)
+
+
+def run_chemberta_ensemble(long_df: pd.DataFrame, args) -> list[dict]:
+    """Phase 2 deep-ensemble eval for ChemBERTa.
+
+    For each fold (5 folds), train n_seeds fresh models, aggregate per-
+    compound predictions across seeds (mean = point estimate, std =
+    epistemic uncertainty). Conformal-calibrate q95 on OOF residuals,
+    report empirical coverage as a sanity check on the calibration.
+    """
+    from .models.chemberta_lora import _wide_targets, REG_TASKS as _REG
+    from .models.ensemble import train_chemberta_ensemble_kfold
+
+    wide = _wide_targets(long_df)
+    folds = _build_folds(args, wide["smiles_canonical"].unique().tolist(), k=args.cv_folds)
+    log.info(
+        "ChemBERTa ensemble: %s split, %d folds, %d seeds = %d trainings",
+        args.split_mode, args.cv_folds, args.n_seeds, args.cv_folds * args.n_seeds,
+    )
+    results = train_chemberta_ensemble_kfold(wide, folds, args, n_seeds=args.n_seeds)
+
+    rows: list[dict] = []
+    model_tag = f"chemberta_r{args.lora_rank}_{args.split_mode}_n{args.n_seeds}"
+    scheme = f"{args.split_mode}-{args.cv_folds}fold-CV-ensemble{args.n_seeds}"
+    for t, art in results.items():
+        m = regression_metrics(art["y_oof"], art["mean_oof"])
+        rows.append({
+            "model": model_tag,
+            "task": t,
+            "scheme": scheme,
+            "split": "oof",
+            **m,
+            "q95": art["q95"],
+            "coverage_95": art["coverage"],
+        })
+        parity_plot(
+            art["y_oof"], art["mean_oof"], task=t, split=f"oof_{scheme}",
+            model_tag=model_tag,
+        )
+    return rows
+
+
+def run_rf_ensemble(args: argparse.Namespace) -> dict:
+    """Phase 2 deep-ensemble eval for RF (parallel to ChemBERTa)."""
+    from .models.ensemble import train_rf_ensemble_kfold
+
+    long_df, audit = build_dataset()
+    _print_audit_summary(audit)
+
+    rows: list[dict] = []
+    summary_metrics: dict = {}
+    model_tag = f"rf_{args.split_mode}_n{args.n_seeds}"
+    scheme = f"{args.split_mode}-{args.cv_folds}fold-CV-ensemble{args.n_seeds}"
+
+    for task in ["iri", "toxicity", "permeability"]:
+        sub = long_df[long_df["task"] == task]
+        if sub.empty:
+            continue
+        folds = _build_folds(args, sub["smiles_canonical"].unique().tolist(), k=args.cv_folds)
+        art = train_rf_ensemble_kfold(long_df, task, folds, n_seeds=args.n_seeds)
+        if not art:
+            continue
+        m = regression_metrics(art["y_oof"], art["mean_oof"])
+        rows.append({
+            "model": model_tag,
+            "task": task,
+            "scheme": scheme,
+            "split": "oof",
+            **m,
+            "q95": art["q95"],
+            "coverage_95": art["coverage"],
+        })
+        parity_plot(
+            art["y_oof"], art["mean_oof"], task=task, split=f"oof_{scheme}",
+            model_tag=model_tag,
+        )
+        summary_metrics[task] = {
+            "scheme": scheme,
+            "n_oof": int(len(art["y_oof"])),
+            "q95": art["q95"],
+            "coverage_95": art["coverage"],
+        }
+
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    summary = {
+        "model": "rf_ensemble",
+        "n_seeds": args.n_seeds,
+        "split_mode": args.split_mode,
+        "audit": audit,
+        "metrics": rows,
+        "task_eval": summary_metrics,
+    }
+    SUMMARY_PATH.write_text(json.dumps(summary, indent=2, default=str))
+    _append_results_table(rows)
+    print("\n========== RESULTS ==========")
+    print(pd.DataFrame(rows).to_string(index=False))
+    print("=============================\n")
+    return summary
+
+
 def main() -> None:
     args = parse_args()
     seed_everything(args.seed)
     log.info("config: %s", vars(args))
 
     if args.model == "rf":
-        run_rf(args)
+        if args.n_seeds > 1:
+            run_rf_ensemble(args)
+        else:
+            run_rf(args)
     elif args.model == "chemberta":
         run_chemberta(args)
 
