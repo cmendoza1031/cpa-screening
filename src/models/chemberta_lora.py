@@ -114,7 +114,19 @@ def _build_chemberta(config: ChemBertaConfig):
         ) from e
 
     tokenizer = AutoTokenizer.from_pretrained(config.model_name)
-    base = AutoModel.from_pretrained(config.model_name)
+    # Force PyTorch's scaled_dot_product_attention (SDPA / FlashAttention-2 on
+    # supported GPUs). Critical for Blackwell + bf16 stability: eager attention
+    # in bf16 is prone to softmax underflow that produces NaN gradients in
+    # backward; SDPA has built-in numerical stabilization (max-subtract + scale
+    # + safe-softmax) and on Blackwell uses fused kernels that don't expose
+    # those failure modes. transformers >=4.36 supports this for RoBERTa.
+    try:
+        base = AutoModel.from_pretrained(
+            config.model_name, attn_implementation="sdpa",
+        )
+    except (TypeError, ValueError) as e:
+        log.warning("attn_implementation=sdpa unavailable (%s); falling back to default", e)
+        base = AutoModel.from_pretrained(config.model_name)
     hidden_size = base.config.hidden_size
 
     lora_cfg = LoraConfig(
@@ -345,12 +357,17 @@ def _epoch(
             with ac_ctx:
                 preds = model(**toks)
 
-            # Loss = total squared error across all labeled (compound, task)
-            # pairs in the batch, divided by total labeled count. Bounded near
-            # 1.0 at init on standardized targets; shrinks smoothly. No
-            # per-task weighting so a single outlier in a small-task batch
-            # can't dominate the gradient.
-            total_se = torch.tensor(0.0, device=device, dtype=torch.float32)
+            # Huber loss instead of MSE: gradient w.r.t. prediction is bounded
+            # in [-1, 1] (delta=1.0). MSE has unbounded gradient on outliers
+            # (any (p - y)^2 backward gives 2(p-y), which is huge for big errors
+            # and overflows bf16 backward). Huber clips smoothly at delta and
+            # behaves like MSE inside [-delta, delta].
+            #
+            # Aggregate as total Huber loss across all labeled (compound, task)
+            # pairs / total labeled count. Bounded near 0.5 at init on
+            # standardized targets; shrinks smoothly. No per-task weighting so
+            # a single outlier in a small-task batch can't dominate.
+            total_hl = torch.tensor(0.0, device=device, dtype=torch.float32)
             total_n = 0
             for t in REG_TASKS:
                 m = m_t[t].to(device)
@@ -359,7 +376,15 @@ def _epoch(
                 y = y_t[t].to(device)
                 y_std = (y - standardizer.means[t]) / standardizer.stds[t]
                 p = preds[t].float()  # bf16 -> fp32 for loss
-                total_se = total_se + ((p - y_std) ** 2)[m].sum()
+                # Huber on the masked subset, with delta=1.0
+                err = (p - y_std)[m]
+                abs_err = err.abs()
+                huber = torch.where(
+                    abs_err < 1.0,
+                    0.5 * err * err,
+                    abs_err - 0.5,
+                )
+                total_hl = total_hl + huber.sum()
                 total_n += int(m.sum().item())
 
                 p_unstd = (p.detach() * standardizer.stds[t] + standardizer.means[t]).cpu().numpy()
@@ -369,7 +394,7 @@ def _epoch(
                 ys[t].extend(y_np[m_np].tolist())
 
             n_terms = total_n
-            batch_loss = total_se / max(total_n, 1)
+            batch_loss = total_hl / max(total_n, 1)
 
             if n_terms == 0:
                 continue
