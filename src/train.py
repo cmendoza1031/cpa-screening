@@ -53,11 +53,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--lora-rank", type=int, default=8)
     p.add_argument("--epochs", type=int, default=30)
     p.add_argument("--batch-size", type=int, default=32)
-    # 1e-4 (spec) -> 5e-5 -> 2e-5. The 5e-5 + bf16 + per-task-weighted-loss
-    # config still produced ~80% NaN-grad skip on Blackwell. Combined with
-    # the uniform per-sample loss aggregation + nan_to_num + clip_grad_value
-    # changes in chemberta_lora.py, 2e-5 should give stable training.
-    p.add_argument("--lr", type=float, default=2e-5)
+    # 1e-4 (spec) -> 5e-5 -> 2e-5 -> 5e-5. The 2e-5 setting was over-conservative:
+    # combined with clip_grad_value(0.5) the max per-element update was 1e-5,
+    # too small to fine-tune meaningfully in 30 epochs (train_loss only fell
+    # ~10% per fold). Now that training is stable (0 NaN skips with the
+    # nan_to_num + value-clip safety nets), 5e-5 lets the model actually learn.
+    p.add_argument("--lr", type=float, default=5e-5)
     p.add_argument("--weight-decay", type=float, default=0.01)
     p.add_argument("--patience", type=int, default=5)
     p.add_argument("--max-length", type=int, default=128)

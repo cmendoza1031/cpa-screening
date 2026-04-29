@@ -391,7 +391,7 @@ def _epoch(
                         torch.nan_to_num_(p.grad, nan=0.0, posinf=0.5, neginf=-0.5)
                 torch.nn.utils.clip_grad_value_(
                     [p for p in model.parameters() if p.requires_grad],
-                    clip_value=0.5,
+                    clip_value=1.0,
                 )
                 optimizer.step()
             total_loss += float(batch_loss.detach().cpu().item())
