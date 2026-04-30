@@ -47,3 +47,7 @@ mlruns/
 .matplotlib_cache/
 .hf_cache/
 /runs/
+
+# personal prep notes (never commit)
+INTERVIEW_PREP.md
+notes/
