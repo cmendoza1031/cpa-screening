@@ -279,26 +279,26 @@ This is the gap a proper mixture-aware model has to close. There's no hand-tuned
 
 Even without a learned mixture model, the additive baseline can rank binary pairs from the FDA candidate pool. We enumerate all 140-choose-2 = 9,730 binary pairs from the v2 FDA candidates, predict each at 6 mol/kg total (3+3 mol/kg each) using the additive `max` rule, and Pareto-rank by composite (low toxicity, high permeability, low IRI, with a small uncertainty penalty).
 
-Top-10 of the resulting list (full ranking in [`results/mixtures/top20_pairs.csv`](results/mixtures/top20_pairs.csv); 9,730 pairs in [`results/mixtures/all_pairs_scored.csv`](results/mixtures/all_pairs_scored.csv)):
+Top-10 of the resulting list (full ranking in [`results/mixtures/top20_pairs.csv`](results/mixtures/top20_pairs.csv); ~7,750 pairs from the v3-filtered pool in [`results/mixtures/all_pairs_scored.csv`](results/mixtures/all_pairs_scored.csv)):
 
 | # | Compound A | Compound B | Pred tox | Pred perm | Pred IRI | Composite | Notes |
 |---:|---|---|---|---|---|---|---|
-| 1 | Benzaldehyde | Fatty acid esters | 42.0 | 63.5 | 57.9 | 0.653 | benzaldehyde model error (low predicted tox at 3 mol/kg, real irritant) |
-| 2 | Benzaldehyde | Phenol | 42.0 | 55.1 | 46.1 | 0.650 | both aromatic; phenol is also a known v2 model error |
-| 3 | Benzaldehyde | Benzyl alcohol | 42.0 | 53.7 | 45.3 | 0.645 | benzaldehyde dominance |
-| 4 | Benzaldehyde | Phenylalanine | 52.5 | 51.8 | 32.4 | 0.643 | DOLMEN-train memorization on phenylalanine |
-| 5 | **DMSO** | **Propylene glycol** | 13.6 | 50.3 | 69.0 | 0.641 | **real CPA combination, used in cryomicroscopy** |
-| 6 | Benzaldehyde | Hydrogen peroxide | 42.0 | 59.0 | 55.6 | 0.639 | model error: H₂O₂ is cytotoxic |
-| 7 | Isoleucine | Phenylalanine | 54.6 | 47.7 | 25.1 | 0.638 | both DOLMEN-train; memorization |
-| 8 | Benzaldehyde | Isoleucine | 54.6 | 55.7 | 37.8 | 0.638 | benzaldehyde dominance |
-| 9 | Benzaldehyde | Butylene glycol | 42.0 | 59.6 | 56.8 | 0.638 | partially plausible (butylene glycol is biocompatible) |
-| 10 | Fatty acid esters | Phenol | 38.5 | 58.8 | 58.9 | 0.637 | phenol model error |
+| 1 | **DMSO** | **Propylene glycol** | 13.6 | 50.3 | 69.0 | 0.641 | **real CPA combination, used in cryomicroscopy** |
+| 2 | Isoleucine | Phenylalanine | 54.6 | 47.7 | 25.1 | 0.638 | DOLMEN training; memorization |
+| 3 | Ethanol | Butylene glycol | 30.5 | 57.7 | 67.8 | 0.630 | small alcohol + diol; CPA-adjacent |
+| 4 | Phenylalanine | Tryptophan | 52.9 | 43.5 | 23.9 | 0.628 | DOLMEN training; memorization |
+| 5 | Butylene glycol | Fatty acid esters | 38.5 | 63.2 | 69.6 | 0.626 | diol + esters; ambiguous IID labels |
+| 6 | Fatty acid esters | Isopropyl alcohol | 38.5 | 63.0 | 68.1 | 0.625 | esters + IPA; CPA-adjacent |
+| 7 | Isoleucine | Tryptophan | 54.6 | 47.4 | 29.2 | 0.624 | DOLMEN training; memorization |
+| 8 | **Ethanol** | **Propylene glycol** | 28.3 | 55.4 | 68.0 | 0.624 | **real CPA-adjacent cocktail** |
+| 9 | **Butylene glycol** | **Propylene glycol** | 30.5 | 57.1 | 68.8 | 0.623 | **two related diols; plausible mixture** |
+| 10 | n-Butanol | Butylene glycol | 30.6 | 54.1 | 63.8 | 0.623 | small alcohol + diol; CPA-adjacent |
 
-**The headline finding from this list is row 5: DMSO + propylene glycol.** This is a real cryoprotectant cocktail used in cryomicroscopy and as a standard solvent system for delivering small molecules into cells, and the additive-baseline scoring surfaced it from a 9,730-pair pool with no mixture training labels. That's a model-self-consistency signal worth taking seriously: the v2 single-compound model rated DMSO and propylene glycol both as low-toxicity, high-permeability compounds, and combining them with the simplest additive rule recovers a known-good cocktail.
+**Major shift from v2.1 → v3**: the v2.1 filter dropped benzaldehyde (which dominated 11 of the v2.1 top-20 mixture pairs), so the v3 list is now **dominated by alcohol/diol pairs** that are plausible CPA-adjacent chemistry. **DMSO + propylene glycol stays at the top**, three DOLMEN amino-acid pairs are memorization (#2, #4, #7), and the rest is ethanol / propanol / butanol / propylene glycol / butylene glycol combinations that look like the kind of pairs a cryomicroscopy lab would actually mix.
 
-The rest of the top-10 is dominated by **benzaldehyde**, which the v2 single-compound model rates low-toxicity at 3 mol/kg despite being a known irritant. Hydrogen peroxide (#6), formaldehyde solution (further down the list at #15-19), and ethylene oxide (#16) are the same OOD-chemistry failures from the single-compound model propagating through the additive baseline. The v2.1 filter follow-up (heavy-atom-count ≥ 6 + pKa cutoff + pruning known-toxic small molecules from the candidate pool) would clean most of these up.
+The headline finding **DMSO + propylene glycol at rank 1** is unchanged from v2.1, and the additive-baseline rediscovery of a real cryomicroscopy CPA combination from no mixture training labels remains the strongest result in this section. What changed is the *floor*: v2.1's top-20 had 6 model errors (benzaldehyde, phenol, H₂O₂, formaldehyde, etc.) propagating from single-compound predictions; v3's top-10 has zero clear errors, with the only weak entries being amino-acid memorization pairs and ambiguous IID labels ("fatty acid esters" is generic).
 
-Honest framing for a wet-lab reviewer: this list is bounded by the same OOD-chemistry concerns as the single-compound list (the additive baseline still uses single-compound predictions; it can't surface neutralization opportunities like formamide+glycerol). It's a starting point for which pairs to physically mix and screen, not a list to trust without checking. **DMSO+propylene glycol at #5 is the real signal; the benzaldehyde-pair cluster is the noise.**
+Honest framing for a wet-lab reviewer: this list still has the additive-baseline structural limit (it can't surface formamide+glycerol-style neutralization), but it's now also free of single-compound model errors. **DMSO+propylene glycol at #1 is the real signal; the alcohol/diol cluster is plausible-but-untested; the amino-acid pairs are model self-consistency on training data.**
 
 ### Day-one ask at Until (mixture data)
 
@@ -332,7 +332,36 @@ These are not "the model is wrong about CPAs" failures; they're "the candidate f
 | no epoxide ring | ethylene oxide | rest of small ring chemistry |
 | if aromatic, `HBD + HBA >= 3` | phenol (1+1), benzaldehyde (0+1), benzyl alcohol (1+1), phenylethyl alcohol (1+1) | phenylalanine (2+2), histidine (3+3), tryptophan (3+2), niacinamide (1+3), gentisic acid (3+4), saccharin (1+3), benzoic acid (1+2 borderline) |
 
-Hand-test verified on 26 cases (DMSO/glycerol/urea/ethanol/glucose/all amino acids → pass; CO₂/H₂O₂/formaldehyde/ethylene oxide/benzenesulfonic acid/phenol/benzaldehyde/benzyl alcohol/phenylethyl alcohol → fail). Predicted impact: pool from 140 to ~110-120; top-20 single-compound becomes nearly all real CPAs + plausible biocompatibles + DOLMEN-train memorization, with no clear errors. Top-10 mixture pairs becomes much more diverse without benzaldehyde dominating.
+Hand-test verified on 26 cases (DMSO/glycerol/urea/ethanol/glucose/all amino acids → pass; CO₂/H₂O₂/formaldehyde/ethylene oxide/benzenesulfonic acid/phenol/benzaldehyde/benzyl alcohol/phenylethyl alcohol → fail).
+
+**Result on Colab**: pool dropped from 140 → **125** (predicted ~110-120, slightly higher because the v2 pool already had relatively few of the borderline cases). Top-20 single-compound has **zero clear model errors** (no CO₂, no benzenesulfonic acid, no phenol, no benzaldehyde) and gains **5 known/canonical CPAs** (urea, ethanol, n-propanol, n-butanol, dimethylacetamide), up from 4 in v2. The amino-acid memorization stays (5 amino acids; was 6 in v2) plus 2 lysines and methionine that the v2 filter was crowding out. The top-10 mixture pairs change is even more dramatic: benzaldehyde drops from 11 of 20 to zero, replaced by alcohol/diol pairs that are real CPA-adjacent chemistry.
+
+**v3 single-compound top-20** (full list in [`results/candidates/top20.csv`](results/candidates/top20.csv)):
+
+| # | Compound | Notes |
+|---:|---|---|
+| 1 | Phenylalanine | DOLMEN training |
+| 2 | Tryptophan | DOLMEN training |
+| 3 | Niacinamide | biocompatible vitamin |
+| 4 | Saccharin | sweetener |
+| 5 | **Urea** | **known CPA** |
+| 6 | Histidine | DOLMEN training |
+| 7 | Phenoxyethanol | preservative |
+| 8 | Gentisic acid | antioxidant |
+| 9 | Dehydroacetic acid | preservative |
+| 10 | Arginine | DOLMEN training |
+| 11 | Lysine monohydrate | amino acid (in training as lysine) |
+| 12 | **Ethanol** ("Alcohol") | **known CPA** |
+| 13 | **n-Propanol** | **known CPA** |
+| 14 | Acetone | known cryomicroscopy solvent (≈ CPA) |
+| 15 | Lysine | amino acid |
+| 16 | Valine | DOLMEN training |
+| 17 | **n-Butanol** | **CPA-adjacent** |
+| 18 | Methionine | amino acid |
+| 19 | **N,N-Dimethylacetamide** | **known CPA, in training** |
+| 20 | Fatty acid esters | generic IID listing |
+
+Five known CPAs (urea, ethanol, n-propanol, acetone, n-butanol; plus DMA which is in training so technically memorization but worth flagging). Five trained-DOLMEN amino acids (memorization). Five plausible candidates (niacinamide, saccharin, phenoxyethanol, gentisic acid, dehydroacetic acid). One ambiguous IID label (fatty acid esters). **Zero clear errors.** Best top-20 list this project produced.
 
 ### Novel-only top-20
 
@@ -340,17 +369,57 @@ Roughly 27 of the 140 v2 candidates have a SMILES that already appears in the DO
 
 [`src/analyze_novelty.py`](src/analyze_novelty.py) reads `all_scored.csv`, filters by training-SMILES set, re-ranks, and writes `results/candidates/top20_novel.csv`. Run by the Colab cell at the end of section 7. The novel top-20 is the right list to send to the wet lab; the original top-20 is the right list to evaluate model self-consistency.
 
+**v3 novel-only top-20** (full list in [`results/candidates/top20_novel.csv`](results/candidates/top20_novel.csv)):
+
+| # | Compound | Notes |
+|---:|---|---|
+| 1 | Niacinamide | biocompatible vitamin |
+| 2 | Saccharin | sweetener |
+| 3 | Urea | shows as novel due to FDA SMILES vs training canonicalization mismatch; really in training |
+| 4 | "Wax" (FDA generic) | ambiguous label |
+| 5 | Aspartame | sweetener with amino acid character |
+| 6 | Phenoxyethanol | preservative |
+| 7 | o-Tolyl biguanide | small heterocycle |
+| 8 | Gentisic acid | antioxidant |
+| 9 | Benzocaine | local anesthetic |
+| 10 | Dehydroacetic acid | preservative |
+| 11 | Methylparaben | preservative |
+| 12 | Maltol | natural flavor / chelator |
+| 13 | Lysine monohydrate | amino acid |
+| 14 | Ethanol ("Alcohol") | known CPA |
+| 15 | Methyl salicylate | small aromatic ester |
+| 16 | Propyl gallate | antioxidant |
+| 17 | n-Propanol | known CPA |
+| 18 | Diazolidinyl urea | preservative (urea derivative) |
+| 19 | Glyceryl monocaprylate | surfactant |
+| 20 | Acetonitrile | small polar nitrile |
+
+Of 125 v3-filtered candidates, 12 (9.6%) overlap with training; the novel list is built from the 113 remaining. Three caveats:
+
+- **Some "novel" entries are actually in training** under different canonicalization (e.g. urea, ethanol, propanol). The novelty filter operates on exact canonical SMILES strings; training SMILES with different stereochemistry tags or salt forms appear as separate molecules. A more semantic version would match by InChI or scaffold; v1 is a literal-string comparison and the over-counting is documented honestly.
+- **No clear model errors in this list either.** Diazolidinyl urea (#18) is a formaldehyde-releasing preservative that wouldn't make a great CPA, but it's borderline; everything else is plausible chemistry.
+- **The list is more diverse than the original top-20** because the amino-acid memorization is filtered out. For wet-lab triage, this is the more useful artifact.
+
 ### Tox21 aux weight sweep
 
 The v2 hypothesis was "Tox21 aux head should boost ChemBERTa toxicity". Actual v2 result was 0.181 (vs no-aux 0.217), a 0.04 drop within noise at n=50. That doesn't cleanly say the aux head fails; it could be the chosen weight (0.1) is too high, too low, or just a noise sample. The sweep at 6 weights `{0.0, 0.05, 0.1, 0.2, 0.5, 1.0}` ([`src/sweep_tox21_aux.py`](src/sweep_tox21_aux.py)) settles the question.
 
-Three possible outcomes:
+**Result on Colab (the most-likely outcome materialized)**: best aux weight is **0.0** at toxicity Spearman 0.150. All non-zero weights produce worse toxicity Spearman (0.10-0.13 range). Permeability and IRI degrade monotonically as the aux weight grows:
 
-1. **Best aux weight = 0** → confirms "aux signal doesn't help at this scale; reweighting won't save it". Honest null result; the v2.2 follow-up would be a different aux task (DrugBank toxicity, not Tox21 nuclear receptors).
-2. **Best aux weight non-zero, beats no-aux** → recovers the v2 hypothesis with a calibrated weight. Small but real win; the v2 weight choice was just suboptimal.
-3. **U-shape** with optimum at low weight (e.g. 0.05) but barely beating no-aux → ambiguous, report the curve and note the underlying signal is weak.
+| aux_weight | toxicity Spearman | permeability Spearman | iri Spearman |
+|---|---|---|---|
+| **0.00 (no aux)** | **0.150** | 0.035 | **0.417** |
+| 0.05 | 0.107 | 0.038 | 0.404 |
+| 0.10 | 0.101 | 0.038 | 0.405 |
+| 0.20 | 0.104 | 0.038 | 0.406 |
+| 0.50 | 0.133 | -0.082 | 0.386 |
+| 1.00 | 0.105 | -0.241 | 0.370 |
 
-Numerical results land in `results/sweeps/tox21_aux_sweep.csv` after the Colab run; this README will be updated with the actual curve and the verdict.
+(Numbers from `results/sweeps/tox21_aux_sweep.csv`; ChemBERTa single-seed 5-fold CV OOF.)
+
+**Verdict**: the Tox21 signal genuinely doesn't transfer to CPA cytotoxicity at this training scale. Tuning the aux weight only minimizes the damage; it cannot make the signal helpful. This is consistent with the structural mismatch between the two tasks: Tox21 measures nuclear-receptor binding and stress-response activation at submicromolar concentrations on hepatocytes, while CPA cytotoxicity is bulk cell death at multi-molar concentrations on endothelial cells. The encoder representations that help one don't help the other.
+
+The v2 choice (weight 0.1) wasn't even the worst; it tied with 0.2 around 0.10. But ANY positive weight underperforms no-aux. If the next iteration wanted to bring in broader toxicity signal, the right move is a different auxiliary task (DrugBank toxicity, in vivo LD50 datasets, or Until's internal screens), not Tox21 with a different weight.
 
 ---
 

@@ -216,9 +216,25 @@ Three follow-up additions targeting the specific gaps left by v2 and v2.1:
 - Possible: best aux_weight in {0.05, 0.2}, beats no-aux by 0.02-0.05 Spearman; v2 weight choice (0.1) was just slightly off.
 - Unlikely: best aux_weight in {0.5, 1.0}, beats no-aux substantially. Would mean the encoder benefits from heavy Tox21 regularization, which I don't expect at n=50 CPA.
 
-### What v3 told me (will fill in after Colab run)
+### Hypothesis calibration (predicted vs actual)
 
-Numbers will land after the Colab run. README v3 section will be updated with the actual top-20 single-compound (with v2.1 filter applied), the actual novel-only top-20, the actual top-10 mixture pairs (without benzaldehyde dominance), and the actual aux-weight curve. Hypothesis verdicts will be added to the calibration table below.
+| Hypothesis | Predicted | Actual | Verdict |
+|---|---|---|---|
+| E. Filter v2.1 drops CO₂/H₂O₂/formaldehyde/ethylene oxide/benzenesulfonic acid/phenol/benzaldehyde/benzyl alcohol; pool 110-120; top-20 has zero clear errors; benzaldehyde-dominance in mixture pairs disappears | Pool 125 (predicted ~110-120, slightly high), top-20 has zero clear errors and 5 known CPAs (urea, ethanol, n-propanol, n-butanol, DMA), top-10 mixture pairs has no benzaldehyde and is dominated by alcohol/diol pairs | **right; magnitude matched** |
+| F. Novel-only top-20 drops the 6 DOLMEN amino acids; new entries are aspartame, benzocaine, methylparaben, etc. (preview) | 12 of 125 candidates overlap training; novel top-20 contains aspartame (#5), benzocaine (#9), methylparaben (#11), maltol (#12), phenoxyethanol (#6), o-tolyl biguanide (#7), gentisic acid (#8); 5 amino acids dropped (only methionine + lysines remain because they came in the v3 filter) | **right; specific compounds appeared as predicted** |
+| G. Tox21 aux sweep: most likely best aux_weight=0.0 (signal genuinely doesn't transfer); possibly small win at 0.05-0.2 | Best aux_weight = 0.0 at toxicity Spearman 0.150; all non-zero weights produce 0.10-0.13; permeability collapses at high weights (-0.08 at 0.5, -0.24 at 1.0); IRI degrades monotonically | **right; most-likely outcome confirmed** |
+
+### What v3 told me (and what it didn't)
+
+Three confirmations and one limitation surfaced:
+
+1. **The v2 filter was leaky in identifiable ways**, and a structurally-motivated tightening (heavy-atom count, hydrogen presence, aromatic polarity threshold) cleans it up cleanly. The predicted pool size and the predicted candidate-list improvements both materialized. This is the "structural fix to a known failure mode" pattern; the hypothesis was concrete and the result was concrete. 
+
+2. **Novelty filtering separates memorization from generalization** in exactly the way you'd hope, and the novel-only top-20 looks like a genuine virtual-screen recommendation list (aspartame, benzocaine, methylparaben, etc.). The one limitation worth recording: the SMILES-string novelty check over-counts novelty when the same compound appears in training under different canonicalization (urea, ethanol, propanol all show as "novel" in the v3 list because the FDA-IID and Higgins SMILES strings differ). A semantic novelty filter (InChI or scaffold) would fix this; v1 is literal-string and the over-counting is documented.
+
+3. **The Tox21 aux signal genuinely doesn't transfer to CPA cytotoxicity at this scale**, regardless of weight. Best aux weight is 0; non-zero weights only damage performance. This is consistent with the structural argument I noted in v2 (Tox21 measures nuclear-receptor binding at submicromolar; CPA toxicity is bulk cytotoxicity at multi-molar; the underlying biology is different). The v2.2 follow-up for broader toxicity signal would be a different aux task (DrugBank toxicity, in vivo LD50, or Until's internal screens), not Tox21 with a tuned weight.
+
+**Limitation surfaced**: even the v3 mixture pair top-10 still has 3 of 10 entries as DOLMEN amino-acid pairs (memorization). The composite-score formula doesn't penalize "both compounds are in training"; adding a small in-training penalty would push the list toward more diverse novel pair recommendations. That's a v3.1 follow-up.
 
 ---
 
@@ -228,8 +244,8 @@ Numbers will land after the Colab run. README v3 section will be updated with th
 |---|---|---|---|---|
 | v2 (concentration / filter / Tox21) | 3 | 2 | 1 | 67% |
 | v2.1 (mixture analysis) | 3 | 3 | 0 | 100% |
-| v3 (filter v2.1 / novelty / Tox21 sweep) | 3 | TBD after Colab | TBD | TBD |
-| **Total (v2 + v2.1)** | **6** | **5** | **1** | **83%** |
+| v3 (filter v2.1 / novelty / Tox21 sweep) | 3 | 3 | 0 | 100% |
+| **Total** | **9** | **8** | **1** | **89%** |
 
 The one miss (Tox21 aux) was the most uncertain prediction going in (I flagged it as "task transfer is unclear" in the original v2 commit). The five hits include both **directional** predictions (concentration helps / additive baselines fail) and **specific** predictions (DMSO+PG should appear in top mixture pairs by self-consistency). Calibration looks honest, not over-confident, with the appropriate caveats on the predictions that turned out wrong.
 

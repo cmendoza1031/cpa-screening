@@ -66,11 +66,15 @@ def parse_args() -> argparse.Namespace:
 
 def _run_one_weight(weight: float, args: argparse.Namespace) -> pd.DataFrame:
     """Run python -m src.train with the chosen aux weight; return the
-    rows it appends to results_table.csv."""
-    # snapshot the table so we can diff after this training run
-    before_rows = pd.read_csv(RESULTS_TABLE) if RESULTS_TABLE.exists() else pd.DataFrame()
-    n_before = len(before_rows)
+    metrics rows from the latest run.
 
+    NB: results_table.csv is dedup-by-(model, task, split, scheme) on write,
+    so successive sweep runs SILENTLY OVERWRITE each other in the cumulative
+    table. We rely on results/summary.json instead, which is overwritten per
+    train.py invocation but holds the latest run's full metrics block. We
+    read that immediately after the subprocess returns to capture the
+    weight-specific numbers before the next sweep iteration overwrites them.
+    """
     cmd = [
         sys.executable, "-m", "src.train",
         "--model", "chemberta",
@@ -87,10 +91,17 @@ def _run_one_weight(weight: float, args: argparse.Namespace) -> pd.DataFrame:
     log.info("running aux_weight=%s: %s", weight, " ".join(cmd))
     subprocess.run(cmd, check=True)
 
-    after_rows = pd.read_csv(RESULTS_TABLE)
-    new_rows = after_rows.iloc[n_before:].copy()
-    new_rows["aux_weight"] = weight
-    return new_rows
+    if not SUMMARY_JSON.exists():
+        log.warning("summary.json not found after train.py; returning empty rows")
+        return pd.DataFrame()
+    summary = json.loads(SUMMARY_JSON.read_text())
+    metrics = summary.get("metrics", [])
+    rows = pd.DataFrame(metrics)
+    if rows.empty:
+        log.warning("summary.json has no metrics block for aux_weight=%s", weight)
+        return rows
+    rows["aux_weight"] = weight
+    return rows
 
 
 def main() -> None:
