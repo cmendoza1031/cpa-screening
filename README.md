@@ -22,6 +22,8 @@ python -m src.figures
 
 Or open `[colab_runner.ipynb](colab_runner.ipynb)` and run top-to-bottom on a Colab Pro GPU. Total wall-clock on Blackwell: ~25 min.
 
+For the iteration history (v1 → v2 → v2.1, what each version predicted, what actually happened, and how the top-20 candidate lists changed across versions), see [ITERATION_LOG.md](ITERATION_LOG.md).
+
 ---
 
 ## Why this matters
@@ -347,7 +349,9 @@ The three items marked v2 above are documented in the next section. Items 1 and 
 
 ## v2: changes I made after looking at the v1 outputs
 
-The original plan had a clean Phase 1 → Phase 2 → Phase 3 structure and that's what shipped first. After Phase 3 was done I went back through `all_scored.csv`, the per-task results table, and the Higgins Dec 2025 raw data, and three specific problems jumped out. I implemented fixes for all three before the coffee chat. They're the items above marked "shipped in v2". The repo as it sits now is the v2 version; v1 metrics are preserved in `results/results_table.csv` from the earlier runs for direct comparison.
+The original plan had a clean Phase 1 → Phase 2 → Phase 3 structure and that's what shipped first. After Phase 3 was done I went back through `all_scored.csv`, the per-task results table, and the Higgins Dec 2025 raw data, and three specific problems jumped out. I implemented fixes for all three before the coffee chat. They're the items above marked "shipped in v2".
+
+The full hypothesis-by-hypothesis trail (predictions, results, calibration record across versions) lives in [ITERATION_LOG.md](ITERATION_LOG.md). v2 was 2/3 right; the one that didn't pan out (Tox21 aux head boosting ChemBERTa toxicity) is documented honestly there.
 
 ### What I noticed and what I changed
 
