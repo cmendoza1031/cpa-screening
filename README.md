@@ -214,6 +214,68 @@ This is the honest read for a wet-lab reviewer: at this training scale, this top
 
 ---
 
+## Mixture-aware analysis (v2.1)
+
+CPAs are practically used as multi-component cocktails, not single compounds. The headline empirical finding from Higgins Dec 2025 is the *toxicity neutralization* effect: formamide alone at 6 mol/kg gives ~20% viability, but formamide+glycerol at 6+6=12 mol/kg gives ~95% viability. A single-compound model has no way to predict that. M22, VS55, and VEG (the vitrification cocktails actually used clinically) are 4-6 component mixtures designed specifically to push past the single-compound toxicity ceiling. So mixture modeling is *the* most important gap this repo had at the end of v2.
+
+### What the data actually allows
+
+The Higgins Dec 2025 paper publishes binary mixture viability data only as bar charts in Figures 3 and 4. The values readable from those figures are **16 binary mixtures**:
+
+- 11 at 6 mol/kg total (3 mol/kg of each component)
+- 5 at 12 mol/kg total (6 mol/kg of each component)
+
+All 16 share **glycerol** as one of the two components (since the paper's figures are organized as "glycerol-pair scans"). This is enough for an analysis but nowhere near enough to fit a learned-interaction pair encoder. With 5-fold CV, 16/5 = 3 rows per fold, the model would memorize. So v2.1 ships:
+
+1. The **architecture** for a learned pair encoder (`PairEncoder` in [`src/models/mixture.py`](src/models/mixture.py)), documented and shape-tested but not trained. It's drop-in ready when 200+ binary mixture rows become available, either from the Higgins supplementary table when published or from new wet-lab data.
+2. The **additive-baseline analysis**: predict mixture viability by running the v2 single-compound model on each component at its individual concentration, combine the per-compound mortality predictions with one of {max, mean, sum_then_cap, weighted_max}, and compare to the measured mixture viability. This quantifies how badly a single-compound model fails on mixtures, which is the gap a proper mixture model would have to close.
+
+### Additive baseline result on 16 known mixtures
+
+Using the v2 RF cluster-ensemble (concentration-aware toxicity head, the strongest single-compound model in v2 at Spearman 0.64):
+
+| Combination rule | n | Spearman | MAE (pp) | RMSE | R² | Neutralization misses (>25 pp) |
+|---|---|---|---|---|---|---|
+| max | 16 | +0.18 | 20.5 | 27.0 | -0.08 | 3 |
+| mean | 16 | +0.22 | 20.2 | 28.2 | -0.18 | 1 |
+| sum_then_cap | 16 | +0.22 | 27.8 | 36.3 | -0.95 | 7 |
+| weighted_max | 16 | +0.19 | 20.1 | 27.2 | -0.10 | 1 |
+
+(Numbers from local n_seeds=3 RF run; Colab n_seeds=5 may shift slightly but the conclusion holds.)
+
+All four rules give Spearman in [0.18, 0.22] and MAE around 20 percentage points, with negative R² across the board. **A single-compound model combined with any of the standard additive heuristics is essentially uncorrelated with measured mixture viability.** This is the quantitative version of "single-compound modeling fundamentally can't predict mixture toxicity." 
+
+### The neutralization case study
+
+The headline failure is exactly the formamide+glycerol case from Higgins's paper:
+
+| Mixture | Total conc | **Measured viability** | Additive `max` | Additive `mean` | Additive `sum_then_cap` |
+|---|---|---|---|---|---|
+| glycerol + formamide | 6 mol/kg | 65 | 55.8 | 65.1 | 30.3 |
+| glycerol + formamide | **12 mol/kg** | **95** | **31.7** | **40.7** | **0.0** |
+
+At 6 mol/kg total (3+3 each), all rules are within ~10-35 pp of truth, since formamide and glycerol are both relatively non-toxic individually at 3 mol/kg, so additive combinations are roughly right. At 12 mol/kg total, formamide alone is ~80% toxic and glycerol alone is ~60% toxic, so additive predictions are between 30 (max-rule) and 0 (sum-cap), but the *measured* viability is **95** because the two compounds neutralize each other's toxicity. **Additive `max` misses by 63 percentage points; `sum_then_cap` misses by 95.**
+
+This is the gap a proper mixture-aware model has to close. There's no hand-tuned additive rule that can capture it; the model has to learn an interaction term from data. And we don't have that data yet at usable scale.
+
+### FDA mixture pair scoring
+
+Even without a learned mixture model, the additive baseline can rank binary pairs from the FDA candidate pool. We enumerate all 140-choose-2 = 9,730 binary pairs from the v2 FDA candidates, predict each at 6 mol/kg total (3+3 mol/kg each), and Pareto-rank by composite (low toxicity, high permeability, low IRI, with a small uncertainty penalty).
+
+The full top-20 lands in [`results/mixtures/top20_pairs.csv`](results/mixtures/top20_pairs.csv) after the Colab run. Honest framing for a wet-lab reviewer: this list is bounded by the same OOD-chemistry concerns as the single-compound list (the additive-baseline composite still uses single-compound predictions; it can't surface neutralization opportunities). It's a starting point for which pairs to physically mix and screen, not a list to trust without checking.
+
+### Day-one ask at Until
+
+Mixture data, in roughly this order:
+
+1. The Higgins Dec 2025 supplementary numeric tables (if/when published; the bioRxiv preprint only has the bar charts).
+2. Until's internal binary-mixture screens (presumably the robots have run hundreds beyond what's public).
+3. Literature compilation of CPA cocktail viability from Fahy's group, Mazur's group, and the cryoEM community.
+
+With 200-500 binary mixture rows, the `PairEncoder` architecture in `src/models/mixture.py` becomes trainable and you can actually test the formamide+glycerol-style neutralization story end-to-end. That's the v2.2 deliverable.
+
+---
+
 ## Limitations
 
 In the same spirit:
@@ -222,7 +284,7 @@ In the same spirit:
 - **Small-task data is still the bottleneck for ChemBERTa under cluster splits.** Even with the Tox21 aux head active in v2 (weight 0.1, 7800 extra compounds), ChemBERTa cluster-ensemble toxicity Spearman is 0.18 (was 0.22 in v1, within noise at n=50). At ~10 toxicity training compounds per fold, the pretrained model's adapter still overfits to spurious correlations. RF on Morgan FPs is more robust here because the inductive prior (Tanimoto similarity in feature space ≈ structural similarity) approximates exactly what cluster-aware splits enforce.
 - **Toxicity is from one paper, one cell type, one temperature.** Higgins's Dec 2025 data uses bovine pulmonary artery endothelial cells (BPAEC) at 4 °C with 30 min exposure. Real organ cryopreservation involves multiple cell types, longer exposure, and cooling rates. The Tox21 aux head was supposed to broaden this; v2 results say it's too low-signal at the recipe I tried. Worth a sweep before declaring it dead.
 - **The Higgins viability values are read from bar charts.** ±5 percentage points precision. If the authors publish raw tables, regenerating is one script in [`data/raw/higgins_dec2025_build.py`](data/raw/higgins_dec2025_build.py).
-- **No mixture modeling.** Higgins's headline finding (formamide alone at 6 mol/kg gives 20% viability; formamide+glycerol at 6+6 = 12 mol/kg gives 97% viability) is *exactly* the regime where CPAs become usable. Single-compound modeling fundamentally can't predict this. The mixture-aware architecture is the lead item in [DESIGN_DOC.md](DESIGN_DOC.md).
+- **Mixture-aware model is data-limited, not architecture-limited.** v2.1 ships the `PairEncoder` architecture and quantifies the failure mode of additive baselines on 16 known binary mixtures (Spearman ≈ 0.20 across rules; formamide+glycerol@12 mol/kg miss by 63-95 pp). The architecture would train at 200+ mixture rows; the rate-limiter is data extraction from Higgins's supplementary tables and Until's internal screens. See [Mixture-aware analysis (v2.1)](#mixture-aware-analysis-v21) for the headline numbers.
 - **No molecular-dynamics features.** Until Labs explicitly couples atomic-scale MD to cellular-scale wet-lab screens; this repo is wet-lab data only. MD-derived hydration metrics (water displacement, H-bond disruption, glass-transition predictions) would be a natural complementary feature set. Discussed in [DESIGN_DOC.md](DESIGN_DOC.md).
 - **No wet-lab validation.** The Pareto top-20 is a recommendation list, not validated predictions. Closing the loop is also in [DESIGN_DOC.md](DESIGN_DOC.md).
 
@@ -234,7 +296,7 @@ Sketched briefly here; full architectural detail in [DESIGN_DOC.md](DESIGN_DOC.m
 
 | # | Improvement | Why it matters | Status |
 |---:|---|---|---|
-| 1 | **Mixture-aware architecture** (pair-of-SMILES → learned interaction term, trained on Higgins Dec 2025 binary mixtures + literature compilation) | Real CPAs are mixtures; current model can't predict toxicity neutralization | not started |
+| 1 | **Mixture-aware architecture** (pair-of-SMILES → learned interaction term, trained on Higgins Dec 2025 binary mixtures + literature compilation) | Real CPAs are mixtures; current model can't predict toxicity neutralization | **partially shipped in v2.1**: additive baseline analysis + PairEncoder architecture; training gated on more data |
 | 2 | **Concentration as an input feature** (dose-response prediction instead of point estimates) | Higgins Dec 2025 has rich dose-response; v1 throws it away | **shipped in v2 (see below)** |
 | 3 | **Tighter CPA-like physicochemical filter** | Removes dyes, biologics, organomercurials from the candidate pool, surfaces real candidates | **shipped in v2 (see below)** |
 | 4 | **Tox21 auxiliary classification head** (already wired in code, gated by DeepChem install) | Adds ~7,800 broader-toxicity training signal; addresses the n=22 toxicity bottleneck | **shipped in v2 (see below)** |
@@ -325,16 +387,18 @@ cpa-screening/
 │   │   ├── pubchem.py             # CAS-dashed name lookup w/ disk cache
 │   │   ├── dolmen.py              # IRI raw CSV download + parse
 │   │   ├── higgins.py             # Jan + Dec 2025 loaders (templates + parsing)
-│   │   ├── tox21.py               # MoleculeNet via DeepChem (auxiliary head, not activated for v1)
+│   │   ├── tox21.py               # MoleculeNet direct CSV (no DeepChem dep); aux head active in v2
 │   │   ├── fda_iid.py             # FDA IID download (zip-aware) + CPA filter
 │   │   ├── splits.py              # random + Tanimoto cluster k-fold + LOO
 │   │   └── build.py               # consolidated long-format + audit
 │   ├── models/
-│   │   ├── rf_baseline.py         # Morgan + descriptors + RF
-│   │   ├── chemberta_lora.py      # ChemBERTa-2 + LoRA + multi-task heads
-│   │   └── ensemble.py            # 5-seed deep ensemble + conformal cal
-│   ├── train.py                   # argparse entry; --model/--n-seeds/--split-mode
-│   ├── score_candidates.py        # Pareto top-K from FDA IID
+│   │   ├── rf_baseline.py         # Morgan + descriptors + RF (concentration-aware in v2)
+│   │   ├── chemberta_lora.py      # ChemBERTa-2 + LoRA + multi-task heads + Tox21 aux
+│   │   ├── ensemble.py            # 5-seed deep ensemble + conformal cal
+│   │   └── mixture.py             # additive baseline + PairEncoder architecture (v2.1)
+│   ├── train.py                   # argparse entry; --model/--n-seeds/--split-mode/--tox21-aux
+│   ├── score_candidates.py        # Pareto top-K single-compound from FDA IID
+│   ├── score_mixtures.py          # additive baseline eval + Pareto top-K binary pairs (v2.1)
 │   ├── eval.py                    # metrics + parity plots
 │   ├── figures.py                 # README-quality figures
 │   └── utils.py                   # paths, seeding, canonical SMILES
