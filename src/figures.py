@@ -86,7 +86,7 @@ def _spearman_summary_plot() -> Path:
                             fontsize=8)
         ax.set_xticks(x)
         ax.set_xticklabels(scheme_order, rotation=20, ha="right", fontsize=8)
-        ns = sub.drop_duplicates("scheme_label")["n"].iloc[0] if not sub.empty else "—"
+        ns = sub.drop_duplicates("scheme_label")["n"].iloc[0] if not sub.empty else "n/a"
         ax.set_title(f"{task}  (n={int(ns) if isinstance(ns, (int, np.integer)) else ns})", fontsize=11)
         ax.axhline(0, color="black", lw=0.6)
         ax.grid(axis="y", linestyle="--", alpha=0.3)

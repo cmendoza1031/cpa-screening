@@ -70,22 +70,61 @@ class ChemBertaConfig:
     patience: int = 5
     seed: int = 0
     tox21_aux: bool = False
+    # Auxiliary loss weight. Total loss = cpa_huber + tox21_aux_weight * tox21_bce.
+    # Kept low so the aux head provides regularization to the encoder without
+    # dominating the CPA-task gradients (the aux task has 7800 compounds vs
+    # ~330 for the CPA tasks). Sensitivity to this value should be checked
+    # in a follow-up sweep; 0.1 is a reasonable starting point.
+    tox21_aux_weight: float = 0.1
     smoke: bool = False  # 2-epoch tiny-subset run for local CI / sanity
 
 
 # -------------------- Dataset / collator -----------------------------------
 
 
-def _wide_targets(long_df: pd.DataFrame) -> pd.DataFrame:
-    """Pivot (smiles, task, value) long-format into wide per-compound table.
+# Per-task default concentrations for FDA scoring + IRI/permeability rows.
+# These match what build_dataset() uses; values are mol/kg.
+TOX_REFERENCE_CONC_MOL_KG = 6.0   # mid-range from Higgins Dec 2025 (3/6/12)
+IRI_REFERENCE_CONC_MOL_KG = 0.020  # DOLMEN splat assay (~20 mM)
+PERM_REFERENCE_CONC_MOL_KG = 0.5   # Higgins Jan 2025 permeability assay
+DEFAULT_CONC_MOL_KG = {
+    "toxicity": TOX_REFERENCE_CONC_MOL_KG,
+    "permeability": PERM_REFERENCE_CONC_MOL_KG,
+    "iri": IRI_REFERENCE_CONC_MOL_KG,
+}
 
-    Columns: smiles_canonical, toxicity, permeability, iri (any of these
-    may be NaN for a given compound).
+# Concentration normalization. The toxicity range is 3-12 mol/kg with
+# mean ~6; assay-fixed concentrations for the other tasks are 0.020 and
+# 0.5 mol/kg. We z-score the toxicity range so the toxicity head sees
+# values in a reasonable scale; the IRI/permeability rows look like very
+# negative concentrations to the toxicity head, but their toxicity labels
+# are NaN so the head's output for those rows is never used in loss.
+CONC_MEAN = 6.0
+CONC_STD = 3.0
+
+
+def _wide_targets(long_df: pd.DataFrame) -> pd.DataFrame:
+    """Build a row-per-(smiles, concentration) table for ChemBERTa training.
+
+    Each row is one (compound, concentration) condition with the per-task
+    label that was measured under that condition. Toxicity labels at
+    different concentrations live in different rows so the toxicity head
+    can see dose-response. IRI and permeability assays each have a single
+    fixed concentration and produce one row per compound at that fixed
+    concentration. The same compound can appear in multiple rows if it
+    has measurements across multiple datasets / concentrations.
+
+    Columns: smiles_canonical, concentration_mol_kg, toxicity, permeability, iri
     """
+    sub = long_df[long_df["task"].isin(REG_TASKS)].copy()
+    if "concentration_mol_kg" not in sub.columns:
+        # Backward-compat: if loading an old long.parquet without the
+        # concentration column, fall back to per-task default conc.
+        sub["concentration_mol_kg"] = sub["task"].map(DEFAULT_CONC_MOL_KG)
+    sub = sub.dropna(subset=["concentration_mol_kg"])
     wide = (
-        long_df[long_df["task"].isin(REG_TASKS)]
-        .pivot_table(
-            index="smiles_canonical",
+        sub.pivot_table(
+            index=["smiles_canonical", "concentration_mol_kg"],
             columns="task",
             values="value",
             aggfunc="mean",
@@ -95,7 +134,7 @@ def _wide_targets(long_df: pd.DataFrame) -> pd.DataFrame:
     for t in REG_TASKS:
         if t not in wide.columns:
             wide[t] = np.nan
-    return wide[["smiles_canonical"] + REG_TASKS]
+    return wide[["smiles_canonical", "concentration_mol_kg"] + REG_TASKS]
 
 
 # -------------------- Model -----------------------------------------------
@@ -167,9 +206,15 @@ def _build_model(config: ChemBertaConfig):
             super().__init__()
             self.encoder = encoder
             self.tokenizer = tokenizer
-            self.heads = nn.ModuleDict(
-                {t: _Head(hidden, 1, config.head_hidden, config.head_dropout) for t in REG_TASKS}
-            )
+            # Toxicity head takes pooled embedding + scalar concentration.
+            # IRI / permeability heads take pooled only (their assays use
+            # a single fixed concentration so the input would be a constant
+            # and the head would learn to ignore it).
+            self.tox_head = _Head(hidden + 1, 1, config.head_hidden, config.head_dropout)
+            self.heads = nn.ModuleDict({
+                "permeability": _Head(hidden, 1, config.head_hidden, config.head_dropout),
+                "iri": _Head(hidden, 1, config.head_hidden, config.head_dropout),
+            })
             if config.tox21_aux:
                 self.aux_head = _Head(hidden, 12, config.head_hidden, config.head_dropout)
             else:
@@ -182,9 +227,19 @@ def _build_model(config: ChemBertaConfig):
             pooled = (last * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1.0)
             return pooled
 
-        def forward(self, input_ids, attention_mask):
+        def forward(self, input_ids, attention_mask, concentration):
             pooled = self.encode(input_ids, attention_mask)
-            preds = {t: self.heads[t](pooled).squeeze(-1) for t in REG_TASKS}
+            # Standardize concentration before concatenation so the head sees
+            # values near zero-mean unit-variance over the toxicity range.
+            conc_norm = (concentration.float() - CONC_MEAN) / CONC_STD
+            pooled_with_conc = torch.cat(
+                [pooled.float(), conc_norm.unsqueeze(-1)], dim=-1,
+            )
+            preds = {
+                "toxicity": self.tox_head(pooled_with_conc).squeeze(-1),
+                "permeability": self.heads["permeability"](pooled).squeeze(-1),
+                "iri": self.heads["iri"](pooled).squeeze(-1),
+            }
             if self.aux_head is not None:
                 preds["tox21_aux"] = self.aux_head(pooled)
             return preds
@@ -250,34 +305,55 @@ class TaskStandardizer:
         return y_std * self.stds[t] + self.means[t]
 
 
-def _make_batches(
-    smiles: list[str],
-    targets: pd.DataFrame,
+def _make_tox21_batches(
+    tox21_long: pd.DataFrame,
     tokenizer,
     config: ChemBertaConfig,
-    shuffle: bool,
     seed: int,
 ):
+    """Build a DataLoader of (input_ids, mask, 12-task-labels, 12-task-mask)
+    over the Tox21 dataset. We pivot the long-format Tox21 table to one row
+    per compound with 12 binary columns; each (compound, task) pair has a
+    label or NaN if unmeasured (mask=False).
+    """
     import torch
     from torch.utils.data import DataLoader, Dataset
+    from .chemberta_lora import TOX21_TASK_NAMES  # forward ref (defined below)
+
+    if tox21_long.empty:
+        return None
+
+    pivot = (
+        tox21_long.pivot_table(
+            index="smiles_canonical",
+            columns="task",
+            values="label",
+            aggfunc="mean",
+        )
+        .reset_index()
+    )
+    for t in TOX21_TASK_NAMES:
+        if t not in pivot.columns:
+            pivot[t] = float("nan")
+    pivot = pivot[["smiles_canonical"] + TOX21_TASK_NAMES].reset_index(drop=True)
 
     class _DS(Dataset):
-        def __init__(self):
-            self.smiles = smiles
-            self.targets = targets
-
         def __len__(self):
-            return len(self.smiles)
+            return len(pivot)
 
         def __getitem__(self, i):
-            s = self.smiles[i]
-            row = self.targets[self.targets["smiles_canonical"] == s].iloc[0]
-            y = {t: float(row[t]) if not pd.isna(row[t]) else float("nan") for t in REG_TASKS}
-            mask = {t: not pd.isna(row[t]) for t in REG_TASKS}
-            return s, y, mask
+            row = pivot.iloc[i]
+            s = row["smiles_canonical"]
+            labels = [
+                float(row[t]) if not pd.isna(row[t]) else 0.0 for t in TOX21_TASK_NAMES
+            ]
+            mask = [
+                bool(not pd.isna(row[t])) for t in TOX21_TASK_NAMES
+            ]
+            return s, labels, mask
 
     def _collate(batch):
-        smis, ys, masks = zip(*batch)
+        smis, labels, masks = zip(*batch)
         toks = tokenizer(
             list(smis),
             padding=True,
@@ -285,11 +361,74 @@ def _make_batches(
             max_length=config.max_length,
             return_tensors="pt",
         )
+        y_t = torch.tensor(list(labels), dtype=torch.float32)  # (B, 12)
+        m_t = torch.tensor(list(masks), dtype=torch.bool)      # (B, 12)
+        return toks, y_t, m_t
+
+    g = torch.Generator()
+    g.manual_seed(seed)
+    return DataLoader(
+        _DS(),
+        batch_size=config.batch_size,
+        shuffle=True,
+        collate_fn=_collate,
+        generator=g,
+        num_workers=0,
+    )
+
+
+# Tox21 task names; populated from src.data.tox21 if available
+try:
+    from ..data.tox21 import TOX21_TASKS as TOX21_TASK_NAMES  # noqa: E402
+except Exception:
+    TOX21_TASK_NAMES = []
+
+
+def _make_batches(
+    rows: pd.DataFrame,
+    tokenizer,
+    config: ChemBertaConfig,
+    shuffle: bool,
+    seed: int,
+):
+    """Build a DataLoader from a (smiles, concentration, task-labels) wide table.
+
+    Each row carries one (smiles, concentration_mol_kg) condition with whatever
+    task labels are populated for that condition. The collator emits SMILES
+    tokenization, a concentration tensor, plus per-task target+mask tensors.
+    """
+    import torch
+    from torch.utils.data import DataLoader, Dataset
+
+    rows = rows.reset_index(drop=True)
+
+    class _DS(Dataset):
+        def __len__(self):
+            return len(rows)
+
+        def __getitem__(self, i):
+            row = rows.iloc[i]
+            s = row["smiles_canonical"]
+            c = float(row["concentration_mol_kg"])
+            y = {t: float(row[t]) if not pd.isna(row[t]) else float("nan") for t in REG_TASKS}
+            mask = {t: not pd.isna(row[t]) for t in REG_TASKS}
+            return s, c, y, mask
+
+    def _collate(batch):
+        smis, concs, ys, masks = zip(*batch)
+        toks = tokenizer(
+            list(smis),
+            padding=True,
+            truncation=True,
+            max_length=config.max_length,
+            return_tensors="pt",
+        )
+        conc_tensor = torch.tensor(list(concs), dtype=torch.float32)
         y_tensors, m_tensors = {}, {}
         for t in REG_TASKS:
             y_tensors[t] = torch.tensor([y[t] for y in ys], dtype=torch.float32)
             m_tensors[t] = torch.tensor([m[t] for m in masks], dtype=torch.bool)
-        return toks, y_tensors, m_tensors
+        return toks, conc_tensor, y_tensors, m_tensors
 
     g = torch.Generator()
     g.manual_seed(seed)
@@ -328,6 +467,8 @@ def _epoch(
     standardizer: TaskStandardizer,
     weights: dict[str, float],
     optimizer=None,
+    tox21_loader=None,
+    tox21_aux_weight: float = 0.0,
 ):
     import torch
     from contextlib import nullcontext
@@ -340,11 +481,23 @@ def _epoch(
     n_batches = 0
     yhats = {t: [] for t in REG_TASKS}
     ys = {t: [] for t in REG_TASKS}
+    # Aux loss is only computed during training. We cycle through the Tox21
+    # dataloader as an infinite iterator so each CPA batch gets paired with
+    # a Tox21 batch. The aux head exists only when config.tox21_aux=True
+    # at model build time.
+    use_aux = (
+        is_train and tox21_loader is not None and tox21_aux_weight > 0.0
+        and getattr(model, "aux_head", None) is not None
+    )
+    aux_iter = iter(tox21_loader) if use_aux else None
+    aux_running_loss = 0.0
+    aux_n = 0
 
     grad_ctx = torch.enable_grad() if is_train else torch.no_grad()
     with grad_ctx:
-        for toks, y_t, m_t in loader:
+        for toks, conc_t, y_t, m_t in loader:
             toks = {k: v.to(device) for k, v in toks.items()}
+            conc_t = conc_t.to(device)
 
             # Autocast forward in bf16 where supported. Loss + standardization
             # arithmetic stay in fp32 (cast preds back) for numerical stability
@@ -355,7 +508,7 @@ def _epoch(
                 else nullcontext()
             )
             with ac_ctx:
-                preds = model(**toks)
+                preds = model(**toks, concentration=conc_t)
 
             # Huber loss instead of MSE: gradient w.r.t. prediction is bounded
             # in [-1, 1] (delta=1.0). MSE has unbounded gradient on outliers
@@ -398,13 +551,52 @@ def _epoch(
 
             if n_terms == 0:
                 continue
+
+            # Tox21 auxiliary BCE loss. Run a separate forward on a Tox21
+            # batch through the encoder + aux head, compute masked BCE, add
+            # to total loss with low weight. Encoder is shared so the aux
+            # gradient regularizes the same representation the CPA heads use.
+            aux_loss_value = None
+            if use_aux:
+                try:
+                    aux_batch = next(aux_iter)
+                except StopIteration:
+                    aux_iter = iter(tox21_loader)
+                    aux_batch = next(aux_iter)
+                aux_toks, aux_y, aux_m = aux_batch
+                aux_toks = {k: v.to(device) for k, v in aux_toks.items()}
+                aux_y = aux_y.to(device)
+                aux_m = aux_m.to(device)
+                aux_conc = torch.zeros(
+                    aux_y.shape[0], dtype=torch.float32, device=device,
+                )
+                with ac_ctx:
+                    aux_preds = model(**aux_toks, concentration=aux_conc)
+                logits = aux_preds.get("tox21_aux")
+                if logits is not None:
+                    bce = torch.nn.functional.binary_cross_entropy_with_logits(
+                        logits.float(), aux_y, reduction="none",
+                    )
+                    masked_bce = bce[aux_m]
+                    if masked_bce.numel() > 0 and torch.isfinite(masked_bce).all():
+                        aux_loss_value = masked_bce.mean()
+
             if is_train:
-                if not torch.isfinite(batch_loss):
-                    log.warning("non-finite batch loss (%s); skipping step", batch_loss.item())
+                step_loss = batch_loss
+                if aux_loss_value is not None:
+                    step_loss = step_loss + tox21_aux_weight * aux_loss_value
+                    aux_running_loss += float(aux_loss_value.detach().cpu().item())
+                    aux_n += 1
+                if not torch.isfinite(step_loss):
+                    log.warning(
+                        "non-finite step loss (cpa=%s, aux=%s); skipping step",
+                        float(batch_loss.detach()) if torch.isfinite(batch_loss) else "nan",
+                        float(aux_loss_value.detach()) if aux_loss_value is not None and torch.isfinite(aux_loss_value) else "n/a",
+                    )
                     optimizer.zero_grad()
                     continue
                 optimizer.zero_grad()
-                batch_loss.backward()
+                step_loss.backward()
                 # Per-element value clipping. Unlike clip_grad_norm_ (which is
                 # NaN-unsafe -- a single NaN in a grad tensor poisons the norm,
                 # and norm-divided-by-NaN turns every grad NaN), clip_grad_value_
@@ -423,6 +615,9 @@ def _epoch(
             n_batches += 1
 
     avg_loss = total_loss / max(n_batches, 1)
+    if use_aux and aux_n > 0:
+        avg_aux = aux_running_loss / aux_n
+        log.debug("epoch aux BCE loss avg=%.4f over %d batches", avg_aux, aux_n)
     return avg_loss, ys, yhats
 
 
@@ -442,6 +637,7 @@ def _train_one_fold(
     from ..eval import regression_metrics
 
     train_df = wide[wide["smiles_canonical"].isin(smi_train)]
+    val_df = wide[wide["smiles_canonical"].isin(smi_val)]
     standardizer = TaskStandardizer()
     standardizer.fit(train_df)
     weights = _task_weights(train_df)
@@ -449,12 +645,38 @@ def _train_one_fold(
         "[%s] standardizer means=%s stds=%s",
         fold_label, standardizer.means, standardizer.stds,
     )
+    log.info(
+        "[%s] train rows=%d (unique smi=%d), val rows=%d (unique smi=%d)",
+        fold_label, len(train_df), train_df["smiles_canonical"].nunique(),
+        len(val_df), val_df["smiles_canonical"].nunique(),
+    )
     log.info("[%s] task weights: %s", fold_label, weights)
 
     log.info("[%s] loading ChemBERTa-2 + LoRA rank=%d", fold_label, config.lora_rank)
     model = _build_model(config)
-    train_loader = _make_batches(smi_train, wide, model.tokenizer, config, shuffle=True, seed=config.seed)
-    val_loader = _make_batches(smi_val, wide, model.tokenizer, config, shuffle=False, seed=config.seed)
+    train_loader = _make_batches(train_df, model.tokenizer, config, shuffle=True, seed=config.seed)
+    val_loader = _make_batches(val_df, model.tokenizer, config, shuffle=False, seed=config.seed)
+
+    # Tox21 aux loader (only used when config.tox21_aux=True). The loader
+    # cycles indefinitely during _epoch so each CPA training step gets a
+    # paired Tox21 batch. We load once per fold to amortize the parquet read.
+    tox21_loader = None
+    if config.tox21_aux:
+        from ..data.tox21 import load_tox21
+        tox21_long = load_tox21()
+        if not tox21_long.empty:
+            tox21_loader = _make_tox21_batches(
+                tox21_long, model.tokenizer, config, seed=config.seed,
+            )
+            log.info(
+                "[%s] tox21 aux head active: %d (compound, task) labels, weight=%.2f",
+                fold_label, len(tox21_long), config.tox21_aux_weight,
+            )
+        else:
+            log.warning(
+                "[%s] tox21_aux=True but tox21 dataset empty/unavailable; "
+                "running CPA-only", fold_label,
+            )
 
     trainable_params = [p for p in model.parameters() if p.requires_grad]
     optimizer = AdamW(trainable_params, lr=config.lr, weight_decay=config.weight_decay)
@@ -464,7 +686,11 @@ def _train_one_fold(
     bad_epochs = 0
     best_state = None
     for epoch in range(1, config.epochs + 1):
-        train_loss, _, _ = _epoch(model, train_loader, standardizer, weights, optimizer)
+        train_loss, _, _ = _epoch(
+            model, train_loader, standardizer, weights, optimizer,
+            tox21_loader=tox21_loader,
+            tox21_aux_weight=config.tox21_aux_weight,
+        )
         val_loss, ys, yhats = _epoch(model, val_loader, standardizer, weights, optimizer=None)
         per_task = {t: regression_metrics(np.array(ys[t]), np.array(yhats[t])) for t in REG_TASKS}
         log.info(
@@ -497,30 +723,31 @@ def _train_one_fold(
     return model, standardizer
 
 
-def _predict_smiles(
+def _predict_at_conditions(
     model,
-    wide: pd.DataFrame,
     standardizer: TaskStandardizer,
-    smi_list: list[str],
+    rows: list[tuple[str, float]],
     config: ChemBertaConfig,
-) -> dict[str, dict]:
-    """Run the trained model on smi_list, return {task: {smiles: pred}}.
-
-    Runs in eval mode with autocast (bf16) where supported. We need per-
-    compound predictions for OOF aggregation in CV, which _epoch flattens
-    away, so this batches manually.
+) -> dict[str, list[float]]:
+    """Run the trained model on a list of (smiles, concentration) tuples
+    and return {task: list-of-predictions} aligned to the input order.
+    Predictions are in the original (unstandardized) target scale.
     """
     import torch
     from contextlib import nullcontext
 
-    out: dict[str, dict[str, float]] = {t: {} for t in REG_TASKS}
+    out: dict[str, list[float]] = {t: [] for t in REG_TASKS}
+    if not rows:
+        return out
     device = _device()
     amp = _amp_dtype()
     model.eval()
     bs = config.batch_size
     with torch.no_grad():
-        for i in range(0, len(smi_list), bs):
-            batch_smi = smi_list[i : i + bs]
+        for i in range(0, len(rows), bs):
+            batch = rows[i : i + bs]
+            batch_smi = [r[0] for r in batch]
+            batch_conc = [r[1] for r in batch]
             toks = model.tokenizer(
                 batch_smi,
                 padding=True,
@@ -529,16 +756,57 @@ def _predict_smiles(
                 return_tensors="pt",
             )
             toks = {k: v.to(device) for k, v in toks.items()}
+            conc_t = torch.tensor(batch_conc, dtype=torch.float32, device=device)
             ac_ctx = (
                 torch.autocast(device_type=device.type, dtype=amp)
                 if amp is not None else nullcontext()
             )
             with ac_ctx:
-                preds = model(**toks)
+                preds = model(**toks, concentration=conc_t)
             for t in REG_TASKS:
-                p_unstd = (preds[t].float() * standardizer.stds[t] + standardizer.means[t]).cpu().numpy()
-                for s, val in zip(batch_smi, p_unstd):
-                    out[t][s] = float(val)
+                p_unstd = (
+                    preds[t].float() * standardizer.stds[t] + standardizer.means[t]
+                ).cpu().numpy()
+                out[t].extend(p_unstd.tolist())
+    return out
+
+
+def _predict_smiles(
+    model,
+    wide: pd.DataFrame,
+    standardizer: TaskStandardizer,
+    smi_list: list[str],
+    config: ChemBertaConfig,
+) -> dict[str, dict]:
+    """Predict per-task OOF values for the given smiles. Returns
+    {task: {smiles: pred}} with toxicity predicted at the actual measured
+    concentration when available (so the toxicity head sees its dose) and
+    at TOX_REFERENCE_CONC_MOL_KG otherwise. IRI / permeability are predicted
+    at their assay default concentration; the head doesn't actually use it
+    so the choice is cosmetic.
+
+    For CV OOF aggregation we want predictions at the measured conditions,
+    so we pull rows from `wide` where they match the smi_list and have a
+    label for each task.
+    """
+    out: dict[str, dict[str, float]] = {t: {} for t in REG_TASKS}
+    rows_by_smi = wide[wide["smiles_canonical"].isin(smi_list)]
+    for t in REG_TASKS:
+        sub = rows_by_smi.dropna(subset=[t])
+        if sub.empty:
+            continue
+        cond_rows = list(zip(
+            sub["smiles_canonical"].tolist(),
+            sub["concentration_mol_kg"].astype(float).tolist(),
+        ))
+        preds = _predict_at_conditions(model, standardizer, cond_rows, config)
+        # Key by (smi, conc) for toxicity (multiple per compound), smi for others.
+        if t == "toxicity":
+            for (s, c), v in zip(cond_rows, preds[t]):
+                out[t][f"{s}@{c:g}"] = float(v)
+        else:
+            for (s, _c), v in zip(cond_rows, preds[t]):
+                out[t][s] = float(v)
     return out
 
 
@@ -552,7 +820,8 @@ def _make_config(args) -> ChemBertaConfig:
         patience=args.patience,
         max_length=args.max_length,
         seed=args.seed,
-        tox21_aux=False,
+        tox21_aux=getattr(args, "tox21_aux", False),
+        tox21_aux_weight=getattr(args, "tox21_aux_weight", 0.1),
         smoke=args.smoke,
     )
 
@@ -562,8 +831,12 @@ def _eval_per_task(
     wide: pd.DataFrame,
     smi_subset: list[str],
 ) -> dict[str, tuple[np.ndarray, np.ndarray]]:
-    """Build per-task (y_true, y_pred) arrays from the predictions dict,
-    keeping only smiles that have a label for that task.
+    """Build per-task (y_true, y_pred) arrays from the predictions dict.
+
+    For toxicity, prediction keys are "smiles@concentration" (multiple
+    measurements per compound); for IRI / permeability, keys are smiles.
+    Returns aligned (y, yhat) arrays per task, dropping rows where the
+    prediction wasn't computed.
     """
     out = {}
     for t in REG_TASKS:
@@ -571,9 +844,11 @@ def _eval_per_task(
         ys, yhats = [], []
         for _, row in sub.iterrows():
             s = row["smiles_canonical"]
-            if s in smi_to_pred[t]:
+            c = float(row["concentration_mol_kg"])
+            key = f"{s}@{c:g}" if t == "toxicity" else s
+            if key in smi_to_pred[t]:
                 ys.append(float(row[t]))
-                yhats.append(smi_to_pred[t][s])
+                yhats.append(smi_to_pred[t][key])
         out[t] = (np.array(ys), np.array(yhats))
     return out
 

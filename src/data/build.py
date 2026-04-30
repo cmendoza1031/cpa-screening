@@ -75,6 +75,7 @@ def build_dataset(
         cache_is_stale = (
             len(long_df) == 0
             or "iri" not in audit.get("per_task", {})
+            or "concentration_mol_kg" not in long_df.columns
         )
         if cache_is_stale:
             log.warning(
@@ -91,68 +92,106 @@ def build_dataset(
     rows: list[pd.DataFrame] = []
     n_dropped: dict[str, int] = {}
 
+    # Default per-task assay concentrations (mol/kg). For IRI we use the
+    # 20-22 mM splat assay concentration converted to mol/kg (water is
+    # ~1 kg/L for dilute solutions, so 20 mmol/kg ~= 0.020 mol/kg). For
+    # permeability the Higgins Jan 2025 assay uses ~1 osmol/kg total which
+    # is roughly 0.5 mol/kg of CPA depending on van't Hoff factor. These
+    # are placeholders; the values matter for the toxicity head only,
+    # because toxicity is the only task with concentration variation in
+    # training.
+    DOLMEN_CONC_MOL_KG = 0.020
+    HIGGINS_JAN_CONC_MOL_KG = 0.5
+
     # DOLMEN -> IRI
     dolmen = load_dolmen()
     if not dolmen.empty:
         d = dolmen[["smiles_canonical", "mgs_percent", "source"]].copy()
         d = d.rename(columns={"mgs_percent": "value"})
         d["task"] = "iri"
-        d_drop = d["value"].isna().sum()
-        n_dropped["iri/dolmen"] = int(d_drop)
-        rows.append(d.dropna(subset=["value"])[["smiles_canonical", "task", "value", "source"]])
+        d["concentration_mol_kg"] = DOLMEN_CONC_MOL_KG
+        n_dropped["iri/dolmen"] = int(d["value"].isna().sum())
+        rows.append(d.dropna(subset=["value"])[
+            ["smiles_canonical", "task", "value", "concentration_mol_kg", "source"]
+        ])
 
-    # Higgins Jan 2025 -> toxicity (4 C) + permeability (4 C)
+    # Higgins Jan 2025 -> permeability (4 C). Viability left NaN (see README).
     jan = load_higgins_jan2025()
     if not jan.empty:
-        if "viability_4c" in jan.columns:
-            tox = jan[["smiles_canonical", "viability_4c", "source"]].copy()
-            tox["value"] = 100.0 - pd.to_numeric(tox["viability_4c"], errors="coerce")
-            tox["task"] = "toxicity"
-            n_dropped["toxicity/higgins_jan2025"] = int(tox["value"].isna().sum())
-            rows.append(
-                tox.dropna(subset=["value"])[["smiles_canonical", "task", "value", "source"]]
-            )
         if "permeability_4c" in jan.columns:
             perm = jan[["smiles_canonical", "permeability_4c", "source"]].copy()
             perm["value"] = pd.to_numeric(perm["permeability_4c"], errors="coerce")
             perm["task"] = "permeability"
+            perm["concentration_mol_kg"] = HIGGINS_JAN_CONC_MOL_KG
             n_dropped["permeability/higgins_jan2025"] = int(perm["value"].isna().sum())
-            rows.append(
-                perm.dropna(subset=["value"])[
-                    ["smiles_canonical", "task", "value", "source"]
-                ]
-            )
+            rows.append(perm.dropna(subset=["value"])[
+                ["smiles_canonical", "task", "value", "concentration_mol_kg", "source"]
+            ])
 
-    # Higgins Dec 2025 -> toxicity (4 C). Multiple concentration rows per
-    # compound; we average within (smiles, source) for the regression target.
+    # Higgins Dec 2025 -> toxicity (4 C). Each (compound, concentration)
+    # measurement is its own row; concentration is the third axis the
+    # toxicity head will use as an input feature.
     dec = load_higgins_dec2025()
     if not dec.empty and "viability_4c" in dec.columns:
-        tox = dec[["smiles_canonical", "viability_4c", "source"]].copy()
+        tox = dec[
+            ["smiles_canonical", "viability_4c", "concentration_mol_kg", "source"]
+        ].copy()
         tox["viability_4c"] = pd.to_numeric(tox["viability_4c"], errors="coerce")
-        tox = tox.dropna(subset=["viability_4c"])
+        tox["concentration_mol_kg"] = pd.to_numeric(
+            tox["concentration_mol_kg"], errors="coerce"
+        )
+        tox = tox.dropna(subset=["viability_4c", "concentration_mol_kg"])
         if not tox.empty:
-            agg = tox.groupby(["smiles_canonical", "source"], as_index=False)[
-                "viability_4c"
-            ].mean()
-            agg["value"] = 100.0 - agg["viability_4c"]
-            agg["task"] = "toxicity"
-            rows.append(agg[["smiles_canonical", "task", "value", "source"]])
+            tox["value"] = 100.0 - tox["viability_4c"]
+            tox["task"] = "toxicity"
+            rows.append(tox[
+                ["smiles_canonical", "task", "value", "concentration_mol_kg", "source"]
+            ])
 
     if not rows:
-        long_df = pd.DataFrame(columns=["smiles_canonical", "task", "value", "source"])
+        long_df = pd.DataFrame(columns=[
+            "smiles_canonical", "task", "value", "concentration_mol_kg", "source"
+        ])
     else:
         long_df = pd.concat(rows, ignore_index=True)
 
     long_df = long_df.dropna(subset=["smiles_canonical", "value"]).copy()
 
-    # Within (smiles, task), average across sources to get one label per pair.
-    # Source column collapses to a comma-joined string for traceability.
+    # For toxicity we keep one row per (smiles, concentration) measurement
+    # so the model sees dose-response. For other tasks we still collapse
+    # duplicates across sources by mean.
     if not long_df.empty:
-        agg = (
-            long_df.groupby(["smiles_canonical", "task"], as_index=False)
-            .agg(value=("value", "mean"), source=("source", lambda s: ",".join(sorted(set(s)))))
-        )
-        long_df = agg
+        non_tox = long_df[long_df["task"] != "toxicity"]
+        tox_rows = long_df[long_df["task"] == "toxicity"]
+        if not non_tox.empty:
+            non_tox_agg = (
+                non_tox.groupby(
+                    ["smiles_canonical", "task", "concentration_mol_kg"],
+                    as_index=False,
+                )
+                .agg(
+                    value=("value", "mean"),
+                    source=("source", lambda s: ",".join(sorted(set(s)))),
+                )
+            )
+        else:
+            non_tox_agg = non_tox
+        # Toxicity: average across same (smiles, concentration) if duplicates;
+        # this preserves dose-response across the 3 / 6 / 12 mol/kg axis.
+        if not tox_rows.empty:
+            tox_agg = (
+                tox_rows.groupby(
+                    ["smiles_canonical", "task", "concentration_mol_kg"],
+                    as_index=False,
+                )
+                .agg(
+                    value=("value", "mean"),
+                    source=("source", lambda s: ",".join(sorted(set(s)))),
+                )
+            )
+        else:
+            tox_agg = tox_rows
+        long_df = pd.concat([non_tox_agg, tox_agg], ignore_index=True)
 
     long_df.to_parquet(LONG_PATH, index=False)
 

@@ -41,6 +41,21 @@ CPA_MW_MAX = 500.0
 CPA_HBD_MIN = 1
 CPA_HBA_MIN = 2
 
+# v2 (strict) filter parameters. v1 above is preserved for the legacy
+# `_passes_cpa_filter` path; the v2 filter `_passes_cpa_filter_v2` is the
+# one wired into the pipeline now. The v1 filter let MW=466 polysulfonated
+# food dyes through the candidate pool because the only polarity criterion
+# (HBA >= 2) is satisfied by sulfonate groups; v2 fixes that and several
+# other classes of obvious non-CPA compounds.
+CPA_V2_MW_MIN = 30.0          # below this is single-atom / ion territory
+CPA_V2_MW_MAX = 350.0         # 350 keeps sucrose/trehalose (342) eligible
+CPA_V2_LOGP_MAX = 1.5         # CPAs are hydrophilic; aromatic preservatives
+                              # like benzyl benzoate (logP ~4) are filtered
+CPA_V2_RING_MAX = 2           # eliminates fused-ring polyaromatics (food dyes)
+CPA_V2_ALLOWED_ELEMENTS = {1, 6, 7, 8, 16}  # H, C, N, O, S
+                                            # excludes halogens, P, all metals
+                                            # (organomercurials, sodium salts pruned)
+
 
 def _download(force: bool = False) -> Path:
     """Download the IID file. The FDA URL actually serves a ZIP archive
@@ -131,7 +146,9 @@ def _pick_column(df: pd.DataFrame, *candidates: str) -> Optional[str]:
     return None
 
 
-def _compute_descriptors(smiles: str) -> Optional[dict]:
+def _compute_descriptors(smiles: str) -> Optional[tuple]:
+    """Returns (mol, descriptor_dict) so the v2 filter can do substructure
+    matches on mol; v1 only needed the dict."""
     try:
         from rdkit import Chem
         from rdkit.Chem import Descriptors, Lipinski
@@ -140,7 +157,7 @@ def _compute_descriptors(smiles: str) -> Optional[dict]:
     mol = Chem.MolFromSmiles(smiles)
     if mol is None:
         return None
-    return {
+    desc = {
         "mw": float(Descriptors.MolWt(mol)),
         "logp": float(Descriptors.MolLogP(mol)),
         "tpsa": float(Descriptors.TPSA(mol)),
@@ -148,14 +165,66 @@ def _compute_descriptors(smiles: str) -> Optional[dict]:
         "hba": int(Lipinski.NumHAcceptors(mol)),
         "rotb": int(Lipinski.NumRotatableBonds(mol)),
         "heavy_atoms": int(mol.GetNumHeavyAtoms()),
+        "ring_count": int(Lipinski.RingCount(mol)),
     }
+    return mol, desc
 
 
 def _passes_cpa_filter(d: dict) -> bool:
+    """Legacy v1 filter. Kept for reproducibility but not used by the
+    pipeline; see _passes_cpa_filter_v2."""
     return (
         d["mw"] < CPA_MW_MAX
         and (d["hbd"] >= CPA_HBD_MIN or d["hba"] >= CPA_HBA_MIN)
     )
+
+
+def _passes_cpa_filter_v2(mol, d: dict) -> bool:
+    """v2 filter. Closer to actual CPA chemistry.
+
+    Real CPAs are small (MW < 200 typically; sugars push this to 350),
+    hydrophilic (logP < 1), polar (multiple H-bond donors/acceptors),
+    have at most one ring, and are made of {C, H, N, O, S} only. The v1
+    filter let polysulfonated food dyes (MW=466, HBA>=8 from sulfonates),
+    organomercurials, halogenated phenolics, and inorganic acids through
+    because the only polarity check passed for any of those.
+
+    v2 rejects, in order:
+      1. MW outside [30, 350]
+      2. logP > 1.5
+      3. polarity insufficient (HBD < 1 AND HBA < 2)
+      4. any element outside {H, C, N, O, S}
+      5. azo group (N=N) present
+      6. more than one sulfonate
+      7. ring count > 2
+    """
+    if not (CPA_V2_MW_MIN < d["mw"] < CPA_V2_MW_MAX):
+        return False
+    if d["logp"] > CPA_V2_LOGP_MAX:
+        return False
+    # Polarity: at least one H-bond donor OR acceptor, OR a TPSA above 15 Å²
+    # (DMSO has HBD=0 / HBA=1 / TPSA=36 and is the canonical CPA, so the
+    # earlier "HBD>=1 OR HBA>=2" criterion was actually wrong here).
+    if d["hbd"] < 1 and d["hba"] < 1 and d["tpsa"] < 15.0:
+        return False
+    # Element whitelist
+    for atom in mol.GetAtoms():
+        if atom.GetAtomicNum() not in CPA_V2_ALLOWED_ELEMENTS:
+            return False
+    # Azo group (any N=N double bond between two N atoms)
+    from rdkit import Chem
+
+    azo = Chem.MolFromSmarts("[#7]=[#7]")
+    if mol.HasSubstructMatch(azo):
+        return False
+    # More than one sulfonate
+    sulfonate = Chem.MolFromSmarts("[SX4](=O)(=O)[O-,OX2H]")
+    if len(mol.GetSubstructMatches(sulfonate)) > 1:
+        return False
+    # Ring count
+    if d["ring_count"] > CPA_V2_RING_MAX:
+        return False
+    return True
 
 
 def load_fda_iid(
@@ -227,27 +296,33 @@ def load_fda_iid(
     work = work.drop_duplicates(subset=["smiles_canonical"]).reset_index(drop=True)
     log.info("fda_iid: %d unique molecules after SMILES dedup", len(work))
 
-    descs = [_compute_descriptors(s) for s in work["smiles_canonical"]]
-    work = work.assign(**{k: [d[k] if d else None for d in descs]
-                          for k in ["mw", "logp", "tpsa", "hbd", "hba", "rotb", "heavy_atoms"]})
+    desc_pairs = [_compute_descriptors(s) for s in work["smiles_canonical"]]
+    mols = [p[0] if p else None for p in desc_pairs]
+    descs = [p[1] if p else None for p in desc_pairs]
+    desc_keys = ["mw", "logp", "tpsa", "hbd", "hba", "rotb", "heavy_atoms", "ring_count"]
+    work = work.assign(**{k: [d[k] if d else None for d in descs] for k in desc_keys})
+    work["_mol"] = mols
     work = work.dropna(subset=["mw"]).copy()
     log.info("fda_iid: %d molecules with valid descriptors", len(work))
 
     pre_filter = len(work)
     mask = work.apply(
-        lambda r: _passes_cpa_filter(
-            {"mw": r["mw"], "hbd": r["hbd"], "hba": r["hba"]}
+        lambda r: _passes_cpa_filter_v2(
+            r["_mol"],
+            {k: r[k] for k in desc_keys},
         ),
         axis=1,
     )
-    work = work[mask].reset_index(drop=True)
+    work = work[mask].drop(columns=["_mol"]).reset_index(drop=True)
     log.info(
-        "fda_iid: %d / %d molecules pass CPA-like filter (MW<%g and (HBD>=%d or HBA>=%d))",
+        "fda_iid: %d / %d molecules pass v2 CPA-like filter "
+        "(MW [%g, %g], logP <=%g, polar, no metals/azo/multi-sulfonate, rings <=%d)",
         len(work),
         pre_filter,
-        CPA_MW_MAX,
-        CPA_HBD_MIN,
-        CPA_HBA_MIN,
+        CPA_V2_MW_MIN,
+        CPA_V2_MW_MAX,
+        CPA_V2_LOGP_MAX,
+        CPA_V2_RING_MAX,
     )
 
     if limit is None:

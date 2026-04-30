@@ -1,18 +1,26 @@
 """Tox21 broad cytotoxicity dataset (auxiliary task for ChemBERTa).
 
-Source: MoleculeNet via DeepChem (deepchem.molnet.load_tox21).
-~7800 compounds, 12 binary nuclear-receptor / stress-response assays.
+The ChemBERTa multi-task model has a 12-class binary classification head
+that's trained jointly with the three CPA regression heads. Tox21 gives
+the encoder ~7800 extra labeled compounds with toxicity-relevant labels
+across 12 nuclear-receptor and stress-response assays. The aux loss is
+weighted low (0.1) so it can't dominate the CPA gradient; the goal is
+regularization / better encoder representations rather than direct
+transfer.
 
-In v1 of this project, Tox21 is *not* fed to the RF baseline (which is one
-regressor per CPA task). It exists for the ChemBERTa+LoRA model where a
-multi-task auxiliary classification head leverages this larger background
-to improve toxicity-relevant representations.
-
-We download it Day 1 anyway to fail fast on DeepChem install/network issues.
+Loader: direct CSV download from the DeepChem GitHub raw mirror. The
+older code used `deepchem.molnet.load_tox21()` but the deepchem package
+fails to install on Python 3.12 (no wheel as of April 2026), so we
+download the same CSV that DeepChem ships, parse it ourselves, and
+canonicalize SMILES with RDKit. The resulting parquet matches what
+DeepChem would have given us.
 """
 
 from __future__ import annotations
 
+import gzip
+import io
+import urllib.request
 from pathlib import Path
 
 import pandas as pd
@@ -22,6 +30,10 @@ from ..utils import PROCESSED_DIR, RAW_DIR, canonical_smiles, get_logger
 log = get_logger("data.tox21")
 
 PROCESSED_PATH = PROCESSED_DIR / "tox21.parquet"
+RAW_PATH = RAW_DIR / "tox21.csv.gz"
+
+# Same URL DeepChem points at; this is the canonical MoleculeNet CSV.
+TOX21_URL = "https://github.com/deepchem/deepchem/raw/master/datasets/tox21.csv.gz"
 
 TOX21_TASKS = [
     "NR-AR",
@@ -39,66 +51,86 @@ TOX21_TASKS = [
 ]
 
 
+def _download() -> bytes:
+    """Fetch the raw gzipped CSV. Cached on disk."""
+    if RAW_PATH.exists():
+        log.info("using cached tox21 raw at %s", RAW_PATH)
+        return RAW_PATH.read_bytes()
+    log.info("downloading tox21 from %s", TOX21_URL)
+    RAW_PATH.parent.mkdir(parents=True, exist_ok=True)
+    req = urllib.request.Request(
+        TOX21_URL, headers={"User-Agent": "cpa-screening/1.0"}
+    )
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        data = resp.read()
+    RAW_PATH.write_bytes(data)
+    log.info("wrote %s (%d bytes)", RAW_PATH, len(data))
+    return data
+
+
 def load_tox21(force_reprocess: bool = False) -> pd.DataFrame:
     """Return Tox21 as a long DataFrame.
 
     Columns: smiles_canonical, task (one of TOX21_TASKS), label (0/1).
-    Missing labels (NaN in the original) are dropped.
+    Missing labels in the original CSV (empty cells) are dropped, which
+    matches DeepChem's behavior of using the per-task weight matrix to
+    mask out unmeasured (compound, task) pairs.
     """
     if PROCESSED_PATH.exists() and not force_reprocess:
-        log.info("loading cached tox21 parquet from %s", PROCESSED_PATH)
-        return pd.read_parquet(PROCESSED_PATH)
+        cached = pd.read_parquet(PROCESSED_PATH)
+        if len(cached) > 0:
+            log.info("loading cached tox21 parquet from %s (%d rows)", PROCESSED_PATH, len(cached))
+            return cached
+        log.warning("cached tox21 parquet is empty; rebuilding")
 
     try:
-        import deepchem as dc
-    except ImportError as e:
-        log.error(
-            "deepchem not installed; Tox21 unavailable. "
-            "RF baseline does not need it; ChemBERTa auxiliary task will skip. "
-            "Install with: pip install deepchem"
-        )
-        return pd.DataFrame(columns=["smiles_canonical", "task", "label"])
-
-    log.info("loading Tox21 via DeepChem (this may download ~5 MB and take a moment)")
-    try:
-        tasks, datasets, transformers = dc.molnet.load_tox21(
-            featurizer="Raw",
-            data_dir=str(RAW_DIR / "tox21"),
-            save_dir=str(RAW_DIR / "tox21" / "save"),
-        )
+        raw = _download()
     except Exception as e:
-        log.error("Tox21 load failed: %s", e)
+        log.error("tox21 download failed: %s", e)
         return pd.DataFrame(columns=["smiles_canonical", "task", "label"])
 
-    train_ds, valid_ds, test_ds = datasets
-    smiles, ys, ws = [], [], []
-    for ds in (train_ds, valid_ds, test_ds):
-        for x, y, w, ids in ds.itersamples():
-            smiles.append(ids)
-            ys.append(y)
-            ws.append(w)
+    text = gzip.decompress(raw).decode("utf-8")
+    df = pd.read_csv(io.StringIO(text))
+    log.info("tox21 raw: %d rows, columns=%s", len(df), df.columns.tolist())
+
+    if "smiles" not in df.columns:
+        log.error("tox21 CSV missing 'smiles' column; got %s", df.columns.tolist())
+        return pd.DataFrame(columns=["smiles_canonical", "task", "label"])
 
     rows = []
-    for s, y, w in zip(smiles, ys, ws):
-        canon = canonical_smiles(str(s))
-        if canon is None:
+    n_canon_failed = 0
+    for _, row in df.iterrows():
+        smi = row["smiles"]
+        if not isinstance(smi, str):
             continue
-        for t, label, weight in zip(tasks, y, w):
-            if weight <= 0:
+        canon = canonical_smiles(smi)
+        if canon is None:
+            n_canon_failed += 1
+            continue
+        for t in TOX21_TASKS:
+            v = row.get(t, "")
+            # Empty cell or NaN (unmeasured); skip rather than impute
+            if pd.isna(v) or v == "":
                 continue
-            rows.append({"smiles_canonical": canon, "task": t, "label": int(label)})
+            try:
+                label = int(float(v))
+            except (TypeError, ValueError):
+                continue
+            rows.append({"smiles_canonical": canon, "task": t, "label": label})
 
-    df = pd.DataFrame(rows)
-    n_compounds = df["smiles_canonical"].nunique() if not df.empty else 0
+    out = pd.DataFrame(rows)
+    n_compounds = out["smiles_canonical"].nunique() if not out.empty else 0
     log.info(
-        "tox21: %d (compound, task) labels across %d unique compounds, %d tasks",
-        len(df),
-        n_compounds,
-        df["task"].nunique() if not df.empty else 0,
+        "tox21: %d (compound, task) labels across %d unique compounds, %d tasks "
+        "(canonicalization dropped %d malformed SMILES)",
+        len(out), n_compounds, out["task"].nunique() if not out.empty else 0,
+        n_canon_failed,
     )
 
-    df.to_parquet(PROCESSED_PATH, index=False)
-    return df
+    PROCESSED_PATH.parent.mkdir(parents=True, exist_ok=True)
+    out.to_parquet(PROCESSED_PATH, index=False)
+    log.info("wrote %s", PROCESSED_PATH)
+    return out
 
 
 if __name__ == "__main__":

@@ -184,7 +184,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--weight-decay", type=float, default=0.01)
     p.add_argument("--patience", type=int, default=5)
     p.add_argument("--max-length", type=int, default=128)
-    p.add_argument("--no-tox21-aux", action="store_true")
+    p.add_argument("--no-tox21-aux", action="store_true",
+                   help="(Legacy alias; aux head is off by default.)")
+    p.add_argument("--tox21-aux", action="store_true",
+                   help="ChemBERTa: enable Tox21 auxiliary classification head "
+                        "during full-data ensemble training")
+    p.add_argument("--tox21-aux-weight", type=float, default=0.1)
     p.add_argument("--cv", action="store_true")
     p.add_argument("--cv-folds", type=int, default=5)
     p.add_argument("--smoke", action="store_true")

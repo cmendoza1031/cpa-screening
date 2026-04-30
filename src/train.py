@@ -67,8 +67,22 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--weight-decay", type=float, default=0.01)
     p.add_argument("--patience", type=int, default=5)
     p.add_argument("--max-length", type=int, default=128)
-    p.add_argument("--no-tox21-aux", action="store_true",
-                   help="disable Tox21 auxiliary head (faster, no DeepChem dep)")
+    p.add_argument(
+        "--tox21-aux", action="store_true",
+        help="ChemBERTa: enable the Tox21 auxiliary classification head. "
+             "Adds a 12-class BCE loss on the shared encoder, weighted at 0.1, "
+             "to give the encoder a broader toxicity-relevant signal during "
+             "fine-tuning. Pulls the Tox21 CSV from the deepchem GitHub mirror "
+             "(no DeepChem package needed).",
+    )
+    p.add_argument(
+        "--tox21-aux-weight", type=float, default=0.1,
+        help="weight on the Tox21 aux BCE loss (default 0.1; total = cpa_huber + w * aux_bce)",
+    )
+    p.add_argument(
+        "--no-tox21-aux", action="store_true",
+        help="(Legacy alias; tox21 aux head is off by default. Use --tox21-aux to enable.)",
+    )
     p.add_argument(
         "--cv",
         action="store_true",
