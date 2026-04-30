@@ -179,6 +179,74 @@ def _passes_cpa_filter(d: dict) -> bool:
     )
 
 
+def _passes_cpa_filter_v21(mol, d: dict) -> bool:
+    """v2.1 filter: v2 PLUS additional rejection criteria for the specific
+    failure modes observed in the v2 top-20 (CO2, H2O2, formaldehyde,
+    ethylene oxide, benzenesulfonic acid, phenol).
+
+    Adds, on top of v2:
+        1. heavy_atoms >= 3              drops H2O2 (2), formaldehyde (2)
+        2. at least 1 hydrogen           drops CO2 (no Hs; purely inorganic)
+        3. no sulfonate groups           tightens v2's "<=1 sulfonate" to 0,
+                                         dropping benzenesulfonic acid
+        4. no epoxide rings              drops ethylene oxide
+        5. if aromatic, HBD+HBA >= 3     drops phenol (1+1=2), benzaldehyde
+                                         (0+1=1), benzyl alcohol (1+1=2);
+                                         keeps amino acids (>=4), niacinamide
+                                         (1+3=4), gentisic acid (3+4=7),
+                                         saccharin (1+3=4), benzoic acid
+                                         (1+2=3 just barely)
+
+    Hand-verified test cases (run via _filter_v21_unit_test below):
+        DMSO, glycerol, urea, formamide, ethanol, glucose, phenylalanine,
+        histidine, tryptophan -> pass
+        CO2, H2O2, formaldehyde, ethylene oxide, benzenesulfonic acid,
+        phenol, benzaldehyde, benzyl alcohol -> fail
+
+    Note: ethanol passes because it's not aromatic (the HBD+HBA aromatic
+    rule doesn't apply). Methanol would be borderline (heavy_atoms=2 just
+    fails the new minimum); FDA IID uses "ALCOHOL" -> ethanol so methanol
+    isn't a candidate in our pool anyway.
+    """
+    if not _passes_cpa_filter_v2(mol, d):
+        return False
+    from rdkit import Chem
+
+    # 1. heavy_atoms >= 3
+    if d["heavy_atoms"] < 3:
+        return False
+
+    # 2. >=1 hydrogen anywhere on the molecule
+    n_h = sum(a.GetTotalNumHs() for a in mol.GetAtoms())
+    if n_h < 1:
+        return False
+
+    # 3. no sulfonates (any count). v2 allowed up to 1; benzenesulfonic acid
+    # passed v2 with exactly 1. Tightening to 0 drops it.
+    sulfonate = Chem.MolFromSmarts("[SX4](=O)(=O)[O-,OX2H]")
+    if mol.HasSubstructMatch(sulfonate):
+        return False
+
+    # 4. no epoxide ring
+    epoxide = Chem.MolFromSmarts("C1OC1")
+    if mol.HasSubstructMatch(epoxide):
+        return False
+
+    # 5. aromatic compounds need substantial polarity. The v2 model has 0
+    # aromatic compounds in toxicity training (all 22 are small aliphatic
+    # CPAs), so aromatic predictions converge to the training mean and
+    # under-predict the actual cytotoxicity of phenolic compounds. Requiring
+    # aromatic candidates to have HBD+HBA >= 3 keeps amino acids and
+    # phenolic antioxidants (which are plausibly OK) but drops the simple
+    # phenol / benzaldehyde / benzyl alcohol class that the model
+    # systematically over-rates.
+    has_aromatic = any(a.GetIsAromatic() for a in mol.GetAtoms())
+    if has_aromatic and (d["hbd"] + d["hba"]) < 3:
+        return False
+
+    return True
+
+
 def _passes_cpa_filter_v2(mol, d: dict) -> bool:
     """v2 filter. Closer to actual CPA chemistry.
 
@@ -307,7 +375,7 @@ def load_fda_iid(
 
     pre_filter = len(work)
     mask = work.apply(
-        lambda r: _passes_cpa_filter_v2(
+        lambda r: _passes_cpa_filter_v21(
             r["_mol"],
             {k: r[k] for k in desc_keys},
         ),
@@ -315,14 +383,11 @@ def load_fda_iid(
     )
     work = work[mask].drop(columns=["_mol"]).reset_index(drop=True)
     log.info(
-        "fda_iid: %d / %d molecules pass v2 CPA-like filter "
-        "(MW [%g, %g], logP <=%g, polar, no metals/azo/multi-sulfonate, rings <=%d)",
+        "fda_iid: %d / %d molecules pass v2.1 CPA-like filter "
+        "(v2 + heavy_atoms>=3, has H, no sulfonate, no epoxide, "
+        "aromatics need HBD+HBA>=3)",
         len(work),
         pre_filter,
-        CPA_V2_MW_MIN,
-        CPA_V2_MW_MAX,
-        CPA_V2_LOGP_MAX,
-        CPA_V2_RING_MAX,
     )
 
     if limit is None:

@@ -193,13 +193,43 @@ Real CPA combination in top-10: **1** (DMSO + propylene glycol at #5). Single-co
 
 ---
 
+## v3: filter v2.1, novel-only top-20, Tox21 aux weight sweep (commit pending)
+
+### What was built
+
+Three follow-up additions targeting the specific gaps left by v2 and v2.1:
+
+1. **Filter v2.1** (`_passes_cpa_filter_v21` in `src/data/fda_iid.py`). Tightens the v2 filter with: heavy_atoms ≥ 3 (drops H₂O₂, formaldehyde), at least 1 hydrogen (drops CO₂), no sulfonates (was ≤ 1 in v2; drops benzenesulfonic acid), no epoxides (drops ethylene oxide), and aromatic compounds need HBD + HBA ≥ 3 (drops phenol, benzaldehyde, benzyl alcohol, phenylethyl alcohol; keeps amino acids, niacinamide, gentisic acid, saccharin, benzoic acid).
+
+2. **Novel-only top-20** (`src/analyze_novelty.py`). Filters `all_scored.csv` to compounds NOT in the training set (DOLMEN + Higgins) and re-ranks. The original top-20 mixes virtual-screen recommendations with model self-consistency on memorized training compounds; the novel-only top-20 is the actual list to send to the wet lab.
+
+3. **Tox21 aux weight sweep** (`src/sweep_tox21_aux.py`). Single-seed 5-fold CV at 6 aux weights {0.0, 0.05, 0.1, 0.2, 0.5, 1.0}. Settles whether v2's choice (0.1) was wrong vs whether the aux signal genuinely doesn't transfer.
+
+### Hypotheses going in (v3)
+
+**Hypothesis E (filter v2.1)**: Layering the new criteria drops CO₂, H₂O₂, formaldehyde, ethylene oxide, benzenesulfonic acid, phenol, benzaldehyde, benzyl alcohol, phenylethyl alcohol from the v2 candidate pool. **Predicted impact**: pool from 140 to ~110-120; top-20 single-compound becomes mostly real CPAs + DOLMEN-train memorization with no clear errors; top-10 mixture pairs becomes much more diverse (no benzaldehyde dominating 11 of 20).
+
+**Hypothesis F (novel-only top-20)**: Removing in-training compounds from the top-20 surfaces the genuine recommendations. **Predicted impact**: 6 amino acids (phenylalanine, tryptophan, histidine, arginine, valine, isoleucine) drop out; new entries are real candidates (preview against the v2 pool: aspartame, benzocaine, benzoic acid, methylparaben, antipyrine, maltol, phenoxyethanol show up). After v2.1 filter is also applied, the novel-only top-20 should be the cleanest candidate list this project produces.
+
+**Hypothesis G (Tox21 aux weight sweep)**: Three plausible outcomes ranked by my prior:
+- Most likely: best aux_weight = 0.0; "Tox21 signal doesn't help at this scale at any reasonable weight". Confirms the v2 hypothesis C miss is structural (task transfer issue) not hyperparameter (weight choice). 
+- Possible: best aux_weight in {0.05, 0.2}, beats no-aux by 0.02-0.05 Spearman; v2 weight choice (0.1) was just slightly off.
+- Unlikely: best aux_weight in {0.5, 1.0}, beats no-aux substantially. Would mean the encoder benefits from heavy Tox21 regularization, which I don't expect at n=50 CPA.
+
+### What v3 told me (will fill in after Colab run)
+
+Numbers will land after the Colab run. README v3 section will be updated with the actual top-20 single-compound (with v2.1 filter applied), the actual novel-only top-20, the actual top-10 mixture pairs (without benzaldehyde dominance), and the actual aux-weight curve. Hypothesis verdicts will be added to the calibration table below.
+
+---
+
 ## Aggregate calibration record
 
 | Iteration | Hypotheses tested | Right | Wrong | Hit rate |
 |---|---|---|---|---|
 | v2 (concentration / filter / Tox21) | 3 | 2 | 1 | 67% |
 | v2.1 (mixture analysis) | 3 | 3 | 0 | 100% |
-| **Total** | **6** | **5** | **1** | **83%** |
+| v3 (filter v2.1 / novelty / Tox21 sweep) | 3 | TBD after Colab | TBD | TBD |
+| **Total (v2 + v2.1)** | **6** | **5** | **1** | **83%** |
 
 The one miss (Tox21 aux) was the most uncertain prediction going in (I flagged it as "task transfer is unclear" in the original v2 commit). The five hits include both **directional** predictions (concentration helps / additive baselines fail) and **specific** predictions (DMSO+PG should appear in top mixture pairs by self-consistency). Calibration looks honest, not over-confident, with the appropriate caveats on the predictions that turned out wrong.
 

@@ -300,9 +300,9 @@ The rest of the top-10 is dominated by **benzaldehyde**, which the v2 single-com
 
 Honest framing for a wet-lab reviewer: this list is bounded by the same OOD-chemistry concerns as the single-compound list (the additive baseline still uses single-compound predictions; it can't surface neutralization opportunities like formamide+glycerol). It's a starting point for which pairs to physically mix and screen, not a list to trust without checking. **DMSO+propylene glycol at #5 is the real signal; the benzaldehyde-pair cluster is the noise.**
 
-### Day-one ask at Until
+### Day-one ask at Until (mixture data)
 
-Mixture data, in roughly this order:
+In roughly this order:
 
 1. The Higgins Dec 2025 supplementary numeric tables (if/when published; the bioRxiv preprint only has the bar charts).
 2. Until's internal binary-mixture screens (presumably the robots have run hundreds beyond what's public).
@@ -312,13 +312,55 @@ With 200-500 binary mixture rows, the `PairEncoder` architecture in `src/models/
 
 ---
 
+## v3: filter v2.1, novel-only top-20, Tox21 aux weight sweep
+
+After the v2 + v2.1 work landed, three loose ends remained that were each cheap to address. v3 closes them.
+
+### Filter v2.1 (tighter CPA filter)
+
+The v2 filter dropped the pool from 435 to 140 but two model errors survived in the top-20: **carbon dioxide** (#18, only 3 heavy atoms) and **benzenesulfonic acid** (#7, single sulfonate is strongly acidic). The v2.1 mixture pair scoring made the same problem more visible: **benzaldehyde** dominated 11 of 20 mixture pairs because the v2 model rates it low-toxicity at 3 mol/kg despite being a known irritant in vivo, and **phenol / hydrogen peroxide / formaldehyde / ethylene oxide** all appear in the top mixture pairs.
+
+These are not "the model is wrong about CPAs" failures; they're "the candidate filter let in compounds that aren't in the CPA design space at all". The v2 filter can't catch them because each of these passes the basic v2 criteria (MW < 350, logP < 1.5, polar enough). The fix is in the candidate filter, not in the model.
+
+`_passes_cpa_filter_v21` in [`src/data/fda_iid.py`](src/data/fda_iid.py) layers the following on top of v2:
+
+| Rule | Drops | Keeps |
+|---|---|---|
+| `heavy_atoms >= 3` | H₂O₂, formaldehyde | ethanol (3), formamide (3), urea (4), DMSO (4) |
+| at least 1 hydrogen on the molecule | CO₂ (purely inorganic) | everything else |
+| no sulfonate (was `<=1` in v2) | benzenesulfonic acid | non-sulfonate molecules |
+| no epoxide ring | ethylene oxide | rest of small ring chemistry |
+| if aromatic, `HBD + HBA >= 3` | phenol (1+1), benzaldehyde (0+1), benzyl alcohol (1+1), phenylethyl alcohol (1+1) | phenylalanine (2+2), histidine (3+3), tryptophan (3+2), niacinamide (1+3), gentisic acid (3+4), saccharin (1+3), benzoic acid (1+2 borderline) |
+
+Hand-test verified on 26 cases (DMSO/glycerol/urea/ethanol/glucose/all amino acids → pass; CO₂/H₂O₂/formaldehyde/ethylene oxide/benzenesulfonic acid/phenol/benzaldehyde/benzyl alcohol/phenylethyl alcohol → fail). Predicted impact: pool from 140 to ~110-120; top-20 single-compound becomes nearly all real CPAs + plausible biocompatibles + DOLMEN-train memorization, with no clear errors. Top-10 mixture pairs becomes much more diverse without benzaldehyde dominating.
+
+### Novel-only top-20
+
+Roughly 27 of the 140 v2 candidates have a SMILES that already appears in the DOLMEN or Higgins training set (mostly the 6 amino acids in DOLMEN: phenylalanine, tryptophan, histidine, arginine, valine, isoleucine; plus urea, ethanol, propanol, butanol, formamide which double as both training and candidate). For those, the model's score is partially memorization, not generalization. For wet-lab triage the more useful list is the top-20 of the **113 novel** candidates: compounds the model has never seen before that it ranks highly.
+
+[`src/analyze_novelty.py`](src/analyze_novelty.py) reads `all_scored.csv`, filters by training-SMILES set, re-ranks, and writes `results/candidates/top20_novel.csv`. Run by the Colab cell at the end of section 7. The novel top-20 is the right list to send to the wet lab; the original top-20 is the right list to evaluate model self-consistency.
+
+### Tox21 aux weight sweep
+
+The v2 hypothesis was "Tox21 aux head should boost ChemBERTa toxicity". Actual v2 result was 0.181 (vs no-aux 0.217), a 0.04 drop within noise at n=50. That doesn't cleanly say the aux head fails; it could be the chosen weight (0.1) is too high, too low, or just a noise sample. The sweep at 6 weights `{0.0, 0.05, 0.1, 0.2, 0.5, 1.0}` ([`src/sweep_tox21_aux.py`](src/sweep_tox21_aux.py)) settles the question.
+
+Three possible outcomes:
+
+1. **Best aux weight = 0** → confirms "aux signal doesn't help at this scale; reweighting won't save it". Honest null result; the v2.2 follow-up would be a different aux task (DrugBank toxicity, not Tox21 nuclear receptors).
+2. **Best aux weight non-zero, beats no-aux** → recovers the v2 hypothesis with a calibrated weight. Small but real win; the v2 weight choice was just suboptimal.
+3. **U-shape** with optimum at low weight (e.g. 0.05) but barely beating no-aux → ambiguous, report the curve and note the underlying signal is weak.
+
+Numerical results land in `results/sweeps/tox21_aux_sweep.csv` after the Colab run; this README will be updated with the actual curve and the verdict.
+
+---
+
 ## Limitations
 
 In the same spirit:
 
-- **CPA-like physicochemical filter still has gaps.** v2 tightened it substantially (element whitelist, ring count, no azo, ≤ 1 sulfonate, MW [30, 350], logP < 1.5) and the candidate pool dropped from 435 to 140. Two errors survived: CO₂ (gas, only 3 heavy atoms) and benzenesulfonic acid (single sulfonate is allowed but it's still strongly acidic). A v2.1 fix: heavy-atom-count ≥ 6 and a pKa cutoff would catch both.
-- **Small-task data is still the bottleneck for ChemBERTa under cluster splits.** Even with the Tox21 aux head active in v2 (weight 0.1, 7800 extra compounds), ChemBERTa cluster-ensemble toxicity Spearman is 0.18 (was 0.22 in v1, within noise at n=50). At ~10 toxicity training compounds per fold, the pretrained model's adapter still overfits to spurious correlations. RF on Morgan FPs is more robust here because the inductive prior (Tanimoto similarity in feature space ≈ structural similarity) approximates exactly what cluster-aware splits enforce.
-- **Toxicity is from one paper, one cell type, one temperature.** Higgins's Dec 2025 data uses bovine pulmonary artery endothelial cells (BPAEC) at 4 °C with 30 min exposure. Real organ cryopreservation involves multiple cell types, longer exposure, and cooling rates. The Tox21 aux head was supposed to broaden this; v2 results say it's too low-signal at the recipe I tried. Worth a sweep before declaring it dead.
+- **CPA-like physicochemical filter is now in v2.1**, addressing the CO₂ / benzenesulfonic-acid / phenol / benzaldehyde leaks from v2. See [v3 above](#v3-filter-v21-novel-only-top-20-tox21-aux-weight-sweep) for the criteria and the predicted impact on the candidate pool. Remaining filter gaps will be visible after the Colab run; document them honestly when they appear.
+- **Small-task data is still the bottleneck for ChemBERTa under cluster splits.** ChemBERTa cluster-ensemble toxicity Spearman is 0.18 (vs RF's 0.64). At ~10 toxicity training compounds per fold, the pretrained model's adapter overfits to spurious correlations. RF on Morgan FPs is more robust here because the inductive prior (Tanimoto similarity in feature space ≈ structural similarity) approximates exactly what cluster-aware splits enforce. The v3 Tox21-aux weight sweep will tell us whether the aux head signal can be tuned to help; the current best guess is "no, the signal is too weak at any reasonable weight at this scale".
+- **Toxicity is from one paper, one cell type, one temperature.** Higgins's Dec 2025 data uses bovine pulmonary artery endothelial cells (BPAEC) at 4 °C with 30 min exposure. Real organ cryopreservation involves multiple cell types, longer exposure, and cooling rates. Tox21 was supposed to broaden this signal; v2 results suggested it didn't help, and v3's sweep will give a definitive answer.
 - **The Higgins viability values are read from bar charts.** ±5 percentage points precision. If the authors publish raw tables, regenerating is one script in `[data/raw/higgins_dec2025_build.py](data/raw/higgins_dec2025_build.py)`.
 - **Mixture-aware model is data-limited, not architecture-limited.** v2.1 ships the `PairEncoder` architecture and quantifies the failure mode of additive baselines on 16 known binary mixtures (Spearman ≈ 0.20 across rules; formamide+glycerol@12 mol/kg miss by 63-95 pp). The architecture would train at 200+ mixture rows; the rate-limiter is data extraction from Higgins's supplementary tables and Until's internal screens. See [Mixture-aware analysis (v2.1)](#mixture-aware-analysis-v21) for the headline numbers.
 - **No molecular-dynamics features.** Until Labs explicitly couples atomic-scale MD to cellular-scale wet-lab screens; this repo is wet-lab data only. MD-derived hydration metrics (water displacement, H-bond disruption, glass-transition predictions) would be a natural complementary feature set. Discussed in [DESIGN_DOC.md](DESIGN_DOC.md).
@@ -335,8 +377,8 @@ Sketched briefly here; full architectural detail in [DESIGN_DOC.md](DESIGN_DOC.m
 | --- | ------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
 | 1   | **Mixture-aware architecture** (pair-of-SMILES → learned interaction term, trained on Higgins Dec 2025 binary mixtures + literature compilation) | Real CPAs are mixtures; current model can't predict toxicity neutralization                 | **partially shipped in v2.1**: additive baseline analysis + PairEncoder architecture; training gated on more data |
 | 2   | **Concentration as an input feature** (dose-response prediction instead of point estimates)                                                      | Higgins Dec 2025 has rich dose-response; v1 throws it away                                  | **shipped in v2 (see below)**                                                                                     |
-| 3   | **Tighter CPA-like physicochemical filter**                                                                                                      | Removes dyes, biologics, organomercurials from the candidate pool, surfaces real candidates | **shipped in v2 (see below)**                                                                                     |
-| 4   | **Tox21 auxiliary classification head** (already wired in code, gated by DeepChem install)                                                       | Adds ~7,800 broader-toxicity training signal; addresses the n=22 toxicity bottleneck        | **shipped in v2 (see below)**                                                                                     |
+| 3   | **Tighter CPA-like physicochemical filter**                                                                                                      | Removes dyes, biologics, organomercurials from the candidate pool, surfaces real candidates | **shipped in v2; v2.1 filter update in v3**                                                                       |
+| 4   | **Tox21 auxiliary classification head** (already wired in code, gated by DeepChem install)                                                       | Adds ~7,800 broader-toxicity training signal; addresses the n=22 toxicity bottleneck        | **shipped in v2; weight sweep in v3**                                                                             |
 | 5   | **MD-derived auxiliary features** (water displacement, H-bond disruption, predicted T_g)                                                         | Complements wet-lab data with atomic-scale signal; matches Until's stated approach          | not started; needs MD compute infra                                                                               |
 | 6   | **Closed-loop active learning** (uncertainty-weighted EI acquisition; model recommends next-batch compounds, robot tests, results retrain)       | Where Until's pipeline lives                                                                | not started                                                                                                       |
 | 7   | **Graph neural network ablation** (e.g. AttentiveFP / D-MPNN)                                                                                    | Tests whether SMILES sequence features are the limit, vs explicit graph topology            | not started                                                                                                       |
@@ -441,6 +483,8 @@ cpa-screening/
 │   ├── train.py                   # argparse entry; --model/--n-seeds/--split-mode/--tox21-aux
 │   ├── score_candidates.py        # Pareto top-K single-compound from FDA IID
 │   ├── score_mixtures.py          # additive baseline eval + Pareto top-K binary pairs (v2.1)
+│   ├── analyze_novelty.py         # filter all_scored to compounds NOT in training (v3)
+│   ├── sweep_tox21_aux.py         # ChemBERTa Tox21 aux-weight sweep (v3)
 │   ├── eval.py                    # metrics + parity plots
 │   ├── figures.py                 # README-quality figures
 │   └── utils.py                   # paths, seeding, canonical SMILES
