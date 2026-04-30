@@ -953,9 +953,14 @@ def _train_chemberta_kfold(
         ys, yhats = [], []
         for _, row in sub.iterrows():
             s = row["smiles_canonical"]
-            if s in oof[t]:
+            c = float(row["concentration_mol_kg"])
+            # Toxicity OOF preds are keyed by "smi@conc" because the same
+            # compound is predicted at multiple measured concentrations;
+            # IRI / permeability are keyed by bare smiles.
+            key = f"{s}@{c:g}" if t == "toxicity" else s
+            if key in oof[t]:
                 ys.append(float(row[t]))
-                yhats.append(oof[t][s])
+                yhats.append(oof[t][key])
         y_arr, yh_arr = np.array(ys), np.array(yhats)
         m = regression_metrics(y_arr, yh_arr)
         rows.append({

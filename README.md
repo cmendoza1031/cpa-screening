@@ -116,94 +116,101 @@ I dropped earlier per-task weighting (inverse-sqrt-of-task-count, motivated by "
 
 The bars are organized into three groups per task. Left to right within each task: random 5-fold (where applicable), random 70/15/15 val/test (IRI only), random LOO (permeability only, RF), Tanimoto cluster 5-fold 5-seed ensemble (the headline cluster-ensemble result). Blue = RF; red = ChemBERTa+LoRA.
 
-### Full results table
+### Full results table (v2)
+
+These are the **v2 numbers** with concentration-aware toxicity, the tighter CPA filter, and the Tox21 auxiliary head active. v1 numbers are preserved in git history. See [v2: changes I made after looking at the v1 outputs](#v2-changes-i-made-after-looking-at-the-v1-outputs) for the motivation behind the v2 changes.
 
 | Architecture | Task | Scheme | n | MAE | RMSE | R² | Spearman | q95 (PI95) | Coverage |
 |---|---|---|---|---|---|---|---|---|---|
 | RF | iri | random 70/15/15 (val) | 46 | 20.9 | 27.3 | 0.07 | **0.424** | n/a | n/a |
 | RF | iri | random 70/15/15 (test) | 40 | 23.4 | 28.4 | 0.09 | **0.377** | n/a | n/a |
-| RF | iri | random 5-fold OOF | 303 | 20.0 | 24.5 | 0.26 | **0.510** | n/a | n/a |
-| RF | iri | **cluster 5-fold 5-seed** | 303 | 20.7 | 24.9 | 0.24 | **0.505** | 47.1 | **0.954** ✓ |
-| RF | toxicity | random 5-fold OOF | 22 | 20.2 | 23.8 | 0.21 | 0.347 | n/a | n/a |
-| RF | toxicity | **cluster 5-fold 5-seed** | 22 | 20.4 | 23.7 | 0.22 | **0.459** | 42.6 | 1.000 (over) |
-| RF | permeability | random 5-fold OOF | 16 | 14.1 | 17.8 | -0.13 | 0.126 | n/a | n/a |
-| RF | permeability | random LOO OOF | 16 | 13.1 | 16.7 | 0.01 | 0.353 | n/a | n/a |
-| RF | permeability | **cluster 5-fold 5-seed** | 16 | 13.8 | 16.7 | 0.01 | **0.353** | 38.3 | 1.000 (over) |
-| ChemBERTa | iri | random 5-fold OOF | 303 | 21.8 | 26.3 | 0.15 | 0.390 | n/a | n/a |
-| ChemBERTa | iri | **cluster 5-fold 5-seed** | 303 | 21.6 | 26.1 | 0.16 | **0.416** | 48.1 | **0.954** ✓ |
-| ChemBERTa | toxicity | random 5-fold OOF | 22 | 23.0 | 27.0 | -0.02 | 0.079 | n/a | n/a |
-| ChemBERTa | toxicity | **cluster 5-fold 5-seed** | 22 | 24.2 | 27.3 | -0.04 | **0.217** | 52.5 | 1.000 (over) |
-| ChemBERTa | permeability | random 5-fold OOF | 16 | 13.5 | 17.1 | -0.03 | 0.209 | n/a | n/a |
-| ChemBERTa | permeability | **cluster 5-fold 5-seed** | 16 | 14.2 | 18.1 | -0.16 | -0.026 | 42.2 | 1.000 (over) |
+| RF | iri | random 5-fold OOF | 303 | 20.0 | 24.4 | 0.26 | **0.511** | n/a | n/a |
+| RF | iri | **cluster 5-fold 5-seed** | 303 | 20.7 | 24.9 | 0.23 | **0.499** | 46.7 | **0.954** ✓ |
+| RF | toxicity | random 5-fold OOF | 50 | 31.4 | 36.6 | 0.22 | **0.527** | n/a | n/a |
+| RF | toxicity | **cluster 5-fold 5-seed** | 50 | 29.6 | 34.2 | 0.32 | **0.643** | 68.7 | 0.980 (over) |
+| RF | permeability | random 5-fold OOF | 16 | 14.3 | 17.7 | -0.11 | 0.100 | n/a | n/a |
+| RF | permeability | random LOO OOF | 16 | 13.0 | 16.7 | 0.02 | 0.344 | n/a | n/a |
+| RF | permeability | **cluster 5-fold 5-seed** | 16 | 13.7 | 16.6 | 0.02 | **0.368** | 38.2 | 1.000 (over) |
+| ChemBERTa | iri | random 5-fold OOF | 303 | 21.5 | 26.1 | 0.16 | 0.405 | n/a | n/a |
+| ChemBERTa | iri | **cluster 5-fold 5-seed** | 303 | 22.0 | 26.3 | 0.15 | **0.391** | 47.5 | **0.954** ✓ |
+| ChemBERTa | toxicity | **cluster 5-fold 5-seed** | 50 | 39.5 | 42.2 | -0.04 | **0.181** | 61.1 | 0.980 (over) |
+| ChemBERTa | permeability | random 5-fold OOF | 16 | 13.8 | 17.4 | -0.07 | 0.015 | n/a | n/a |
+| ChemBERTa | permeability | **cluster 5-fold 5-seed** | 16 | 14.1 | 18.1 | -0.16 | 0.018 | 42.3 | 1.000 (over) |
 
 **Bold rows are the headline cluster-ensemble result** (cluster-aware split, 5-seed ensemble, conformal-calibrated PIs). They are directly comparable across architectures because both share the exact same fold structure.
 
-> **Note**: the table and findings below are the v1 numbers from the original Phase 1-3 plan. After Phase 3 I went back, identified three concrete problems with the v1 outputs, and shipped fixes for all three. See [v2: changes I made after looking at the v1 outputs](#v2-changes-i-made-after-looking-at-the-v1-outputs) for the v2 motivation, implementation, and updated metrics. RF toxicity Spearman in particular jumped from 0.347 → 0.527 just by treating concentration as a real input feature.
+The toxicity OOF n is **50** (not 22) under v2 because each (compound, concentration) measurement from Higgins Dec 2025 is now its own row. Predicting toxicity is therefore a harder task in v2 than v1: the model has to capture dose-response, not just compound identity. RF still gains substantially at this harder target (cluster-ensemble Spearman 0.46 → 0.64); ChemBERTa stays flat-to-slightly-down within noise.
+
+The single-seed ChemBERTa toxicity row is missing from this table because of an OOF aggregation bug in the run that produced these numbers (toxicity predictions were keyed by `"smi@conc"` strings but looked up by bare smiles in the single-seed code path). The cluster-ensemble path used a different aggregator and was unaffected. The bug is fixed in the current code and will produce a real number on the next run; the cluster-ensemble row above is the comparable headline result anyway.
 
 ### Key findings
 
-1. **Random Forest on Morgan fingerprints + descriptors wins on the largest task (IRI) and on toxicity.** RF cluster-ensemble Spearman 0.505 (IRI) and 0.459 (toxicity) vs ChemBERTa 0.416 / 0.217. This is honest. DOLMEN's amino-acid + small-sugar compound space is precisely the regime trees on Morgan FPs are optimized for: tight scaffold structure that fingerprints encode directly, tabular-style supervised learning with hundreds of training examples. Tree models in this regime are notoriously hard to beat. There's substantial published evidence that pretrained transformers are *not* uniformly better than gradient-boosted trees on small molecular property datasets ([Jiang et al. 2021, J Cheminform](https://doi.org/10.1186/s13321-020-00479-8); [Yang et al. 2019, J Chem Inf Model](https://doi.org/10.1021/acs.jcim.9b00237); both are pre-foundation-model but the conclusion has held). Reporting RF as the best baseline, not as a foil, is the scientifically honest result.
+1. **Concentration-aware toxicity is the biggest single intervention in this whole project.** RF toxicity cluster-ensemble Spearman jumped from 0.46 → **0.64** (+0.18) and random 5-fold from 0.35 → **0.53** (+0.18) just from emitting one row per (compound, concentration) measurement and adding concentration as an input feature. The Higgins Dec 2025 dataset's structure (each compound measured at 3, 6, and 12 mol/kg) is exactly the structure the original v1 collapsed into a single mean. The dose-response signal is *the* most informative thing in those 50 measurements; throwing it away by averaging was the single largest mistake in v1.
 
-2. **ChemBERTa+LoRA outperforms RF on permeability under random splits (0.21 vs 0.13 / 0.35 LOO).** This is the foundation-model story working as designed: at n=16 there's not enough data to fit a tree from scratch, but pretrained chemical features transfer in. Under cluster splits the result flips (CB −0.03 vs RF 0.35) because the cluster-test compounds are genuinely dissimilar to train and CB's pretrained features overfit to spurious correlations on the small adapter. Both stories (random-split CB wins, cluster-split RF wins)fit a coherent picture of when transfer-learning helps in low-data chemistry.
+2. **Random Forest on Morgan fingerprints + descriptors is the strongest model on every task.** Cluster-ensemble Spearman: RF 0.499 (IRI) / **0.643** (toxicity) / 0.368 (permeability) vs ChemBERTa 0.391 / 0.181 / 0.018. This is honest reporting. DOLMEN's amino-acid + small-sugar compound space is precisely the regime trees on Morgan FPs are optimized for: tight scaffold structure that fingerprints encode directly, tabular-style supervised learning with hundreds of training examples. Tree models in this regime are notoriously hard to beat. There's substantial published evidence that pretrained transformers are *not* uniformly better than gradient-boosted trees on small molecular property datasets ([Jiang et al. 2021, J Cheminform](https://doi.org/10.1186/s13321-020-00479-8); [Yang et al. 2019, J Chem Inf Model](https://doi.org/10.1021/acs.jcim.9b00237); both pre-foundation-model but the conclusion has held). Reporting RF as the best baseline, not as a foil, is the scientifically honest result.
 
-3. **The cluster-vs-random gap is small for both architectures on IRI.** RF: 0.510 → 0.505. ChemBERTa: 0.390 → 0.416. The Tanimoto-clustered split forces test compounds to be dissimilar to train, and on IRI both models still rank-order them. **The models are learning real structure-property relationships, not memorizing scaffolds.** This is a non-trivial generalization claim.
+3. **The Tox21 auxiliary head didn't move the ChemBERTa toxicity number meaningfully.** Cluster-ensemble ChemBERTa toxicity: 0.18 (with aux head, weight 0.1) vs 0.22 (no aux head, original v1). At n=50 the standard error on Spearman is ~0.13, so this 0.04 drop is within noise. The honest interpretation: at *this* training scale (50 toxicity samples per fold, 30 epochs, weight 0.1) the aux-head signal is too weak to overcome the basic small-data limitation. Tox21 measures nuclear-receptor binding and stress-response activation at submicromolar concentrations on hepatocytes; CPA toxicity is bulk cytotoxicity at multi-molar concentrations on endothelial cells, so direct task transfer was always a stretch. The architecture is in place for sweeps over weight / training schedule / aux-task choice in a follow-up, but the v2 number says "this didn't pay off in the way I hoped."
 
-4. **Conformal calibration achieves the target on the tractable task.** IRI cluster-ensemble coverage = 0.954 for both architectures (target 0.95). Toxicity and permeability over-cover at 1.000. The finite-sample correction at n=22 / n=16 inflates q95, so the prediction intervals on small tasks are conservative (wider than a non-finite-corrected calculation would give) but never undercover. This is appropriate for downstream Pareto ranking: I'd rather flag too many candidates as uncertain than too few.
+4. **The cluster-vs-random gap is small for both architectures on IRI.** RF: 0.511 → 0.499. ChemBERTa: 0.405 → 0.391. The Tanimoto-clustered split forces test compounds to be dissimilar to train, and on IRI both models still rank-order them. **The models are learning real structure-property relationships, not memorizing scaffolds.** This is a non-trivial generalization claim.
 
-5. **The model rediscovers known cryoprotectants without being told.** Urea (#2) and isopropyl alcohol (#20), both real cryoprotectants used in cryomicroscopy and food/biomedical applications, appear in the top-20 from the FDA pool. Neither was labeled as "is a CPA" in training; the model identified them by their predicted toxicity/permeability/IRI profile alone. That's an internal-consistency check worth taking seriously.
+5. **Conformal calibration achieves the target on the tractable task.** IRI cluster-ensemble coverage = 0.954 for both architectures (target 0.95). Toxicity over-covers at 0.98, permeability at 1.00. The finite-sample correction at n=50 / n=16 still inflates q95 a bit, so the prediction intervals on small tasks are conservative (wider than a non-finite-corrected calculation would give) but never undercover. This is appropriate for downstream Pareto ranking: I'd rather flag too many candidates as uncertain than too few.
 
-### FDA top-20 candidates
+6. **The v2 filter cleaned up the candidate pool meaningfully.** Pareto pool went from 435 (v1) to **140** (v2) FDA candidates. The top-20 lost food dyes (FD&C Blue No. 2, D&C Red No. 33), the azo dye 1-(phenylazo)-2-naphthylamine, phenylmercuric acetate, and metaphosphoric acid. It gained urea (still there), ethanol, propanol, and butanol (small primary alcohols, all real CPAs in the literature). The remaining errors are smaller-scale (CO2 in #18, benzenesulfonic acid in #7) and are addressable by tightening the heavy-atom-count and pKa criteria; full discussion in the candidate-list section below.
 
-The Pareto front contains 45 of 435 scored FDA candidates. Top-20 by composite score (predicted toxicity + permeability + IRI, weighted toward tighter PIs):
+### FDA top-20 candidates (v2)
+
+The v2 filter shrinks the FDA candidate pool to **140** compounds (down from 435 in v1). The Pareto front contains 16 of those 140 candidates; the top-20 below is filled out from there by composite score (predicted toxicity + permeability + IRI, weighted toward tighter PIs).
 
 ![Pareto top-20](results/figures/pareto_2d_top20.png)
 
-| Rank | Ingredient | CAS | Tox μ ± σ | Perm μ ± σ | IRI μ ± σ | Notes |
+| Rank | Ingredient | CAS | Tox @ 6 mol/kg μ ± σ | Perm μ ± σ | IRI μ ± σ | Notes |
 |---:|---|---|---|---|---|---|
-| 1 | Aminobenzoate sodium (PABA-Na) | 555-06-6 | 65.5 ± 1.3 | 24.7 ± 0.3 | 35.7 ± 0.9 | sunscreen excipient |
-| 2 | **Urea** | 57-13-6 | 59.3 ± 1.0 | 28.0 ± 0.4 | 58.5 ± 0.8 | **known CPA** |
-| 3 | Niacinamide (Vitamin B₃) | 98-92-0 | 65.2 ± 1.4 | 25.2 ± 0.5 | 36.4 ± 1.0 | biocompatible |
-| 4 | Tryptophan | 73-22-3 | 65.1 ± 0.8 | 24.3 ± 0.4 | 39.3 ± 1.2 | amino acid; in DOLMEN train |
-| 5 | Phenylalanine | 63-91-2 | 63.9 ± 0.6 | 23.3 ± 0.7 | 38.1 ± 1.1 | amino acid; in DOLMEN train |
-| 6 | 1-(Phenylazo)-2-naphthylamine | 85-84-7 | 65.5 ± 1.3 | 23.2 ± 0.5 | 34.9 ± 0.9 | **azo dye, carcinogenic; model error** |
-| 7 | FD&C Blue No. 2 | 860-22-0 | 64.2 ± 1.2 | 23.6 ± 0.6 | 42.4 ± 0.5 | **food dye, MW 466; filter error** |
-| 8 | D&C Red No. 33 | 3567-66-6 | 64.9 ± 1.4 | 23.7 ± 0.5 | 41.2 ± 0.8 | **food dye; filter error** |
-| 9 | o-Tolyl biguanide | 93-69-6 | 66.9 ± 1.3 | 25.3 ± 0.9 | 42.0 ± 0.5 | small heterocycle |
-| 10 | Sodium pyrrolidone carboxylate | 54571-67-4 | 63.2 ± 1.4 | 23.5 ± 0.6 | 43.4 ± 0.9 | humectant (PCA-Na) |
-| 11 | Sodium benzoate | 532-32-1 | 63.9 ± 1.7 | 23.1 ± 0.7 | 37.3 ± 1.1 | preservative; aromatic |
-| 12 | Saccharin | 81-07-2 | 63.0 ± 1.7 | 23.3 ± 0.6 | 42.0 ± 1.1 | sweetener |
-| 13 | Benzoin (±) | 119-53-9 | 64.7 ± 1.4 | 22.6 ± 0.9 | 32.5 ± 1.8 | aromatic ketone |
-| 14 | Histidine | 71-00-1 | 63.1 ± 0.6 | 24.6 ± 0.6 | 48.2 ± 1.9 | amino acid; in DOLMEN train |
-| 15 | Metaphosphoric acid | 37267-86-0 | 62.4 ± 1.7 | 23.7 ± 0.5 | 44.3 ± 1.5 | **strong inorganic acid; clear error** |
-| 16 | Benzyl benzoate | 120-51-4 | 65.5 ± 1.7 | 22.2 ± 0.9 | 31.4 ± 1.5 | aromatic ester |
-| 17 | Arginine | 74-79-3 | 66.8 ± 0.7 | 26.0 ± 0.2 | 53.4 ± 1.2 | amino acid; in DOLMEN train |
-| 18 | Valine | 72-18-4 | 65.7 ± 1.0 | 26.6 ± 0.6 | 54.2 ± 0.9 | amino acid; in DOLMEN train |
-| 19 | Isoleucine | 73-32-5 | 65.3 ± 1.3 | 25.9 ± 0.6 | 52.7 ± 0.8 | amino acid; in DOLMEN train |
-| 20 | **Isopropyl alcohol** | 67-63-0 | 62.6 ± 1.0 | 29.4 ± 0.9 | 63.9 ± 1.4 | **known CPA** |
+| 1 | Phenylalanine | 63-91-2 | 56.3 ± 0.8 | 24.4 ± 0.2 | 37.3 ± 1.0 | amino acid; in DOLMEN train |
+| 2 | Tryptophan | 73-22-3 | 57.5 ± 0.6 | 25.7 ± 0.5 | 38.1 ± 0.8 | amino acid; in DOLMEN train |
+| 3 | Benzaldehyde | 100-52-7 | 52.0 ± 1.4 | 22.3 ± 0.6 | 31.8 ± 1.1 | aromatic; flavoring |
+| 4 | Niacinamide (Vitamin B₃) | 98-92-0 | 60.0 ± 1.5 | 26.5 ± 0.7 | 34.5 ± 0.7 | biocompatible humectant |
+| 5 | Phenylethyl alcohol | 60-12-8 | 50.4 ± 1.5 | 20.3 ± 0.4 | 33.3 ± 0.6 | rose-scented preservative |
+| 6 | Saccharin | 81-07-2 | 53.9 ± 0.8 | 24.2 ± 0.5 | 39.7 ± 1.0 | sweetener |
+| 7 | Benzenesulfonic acid | 98-11-3 | 54.2 ± 1.4 | 22.8 ± 0.3 | 36.5 ± 0.8 | strongly acidic; **likely error** |
+| 8 | Benzyl alcohol | 100-51-6 | 45.7 ± 1.5 | 18.8 ± 0.7 | 34.3 ± 0.5 | preservative; biocompatible |
+| 9 | Phenol | 108-95-2 | 48.3 ± 0.9 | 20.8 ± 0.9 | 34.4 ± 0.9 | toxic at use concentrations; **likely error** |
+| 10 | "Wax" (FDA generic IID label) | n/a | 58.1 ± 0.6 | 24.5 ± 0.5 | 37.9 ± 1.1 | ambiguous label; SMILES resolved to non-wax |
+| 11 | Histidine | 71-00-1 | 56.3 ± 0.7 | 26.1 ± 0.4 | 48.2 ± 0.9 | amino acid; in DOLMEN train |
+| 12 | **Urea** | 57-13-6 | 54.1 ± 1.3 | 29.5 ± 0.4 | 59.4 ± 1.1 | **known CPA** |
+| 13 | Gentisic acid | 490-79-9 | 48.9 ± 0.4 | 21.9 ± 0.6 | 46.6 ± 1.3 | small phenol; antioxidant |
+| 14 | Dehydroacetic acid | 771-03-9 | 57.9 ± 1.3 | 26.0 ± 0.8 | 42.5 ± 1.1 | preservative |
+| 15 | **Ethanol** ("Alcohol") | 64-17-5 | 53.4 ± 3.1 | 26.5 ± 0.7 | 49.8 ± 1.2 | **known CPA / co-solvent** |
+| 16 | **n-Propanol** | 71-23-8 | 51.1 ± 3.3 | 26.5 ± 0.6 | 55.9 ± 0.9 | **CPA in cryomicroscopy** |
+| 17 | Arginine | 74-79-3 | 62.3 ± 0.6 | 27.4 ± 0.6 | 52.9 ± 0.7 | amino acid; in DOLMEN train |
+| 18 | Carbon dioxide | 124-38-9 | 38.7 ± 1.2 | 18.8 ± 0.7 | 53.7 ± 1.5 | gas, 3 heavy atoms; **clear error** |
+| 19 | n-Butanol | 71-36-3 | 53.4 ± 3.3 | 27.1 ± 0.5 | 54.0 ± 1.4 | small primary alcohol; CPA-adjacent |
+| 20 | Valine | 72-18-4 | 63.4 ± 1.0 | 28.2 ± 0.6 | 53.6 ± 0.9 | amino acid; in DOLMEN train |
 
-Full ranking + predictions for all 435 scored candidates: [`results/candidates/all_scored.csv`](results/candidates/all_scored.csv).
+Full ranking + predictions for all 140 scored v2 candidates: [`results/candidates/all_scored.csv`](results/candidates/all_scored.csv).
 
 ### Reading the candidate list honestly
 
-The list mixes real wins, plausible biocompatibles, and obvious model errors. I'm leaving them all in the table because **a virtual screen that hides its failures is much worse than one that surfaces them**. The errors are diagnostic.
+The list mixes real wins, plausible biocompatibles, and a couple of obvious model errors that survived even the v2 filter. I'm leaving them all in the table because **a virtual screen that hides its failures is much worse than one that surfaces them**. The remaining errors are diagnostic.
 
 **Real wins** (known cryoprotectants the model rediscovered without being told they were CPAs):
-- **Urea** (#2). Used in slow-freeze of red blood cells.
-- **Isopropyl alcohol** (#20). Used in cryomicroscopy and as a co-solvent in vitrification cocktails.
+- **Urea** (#12). Used in slow-freeze of red blood cells and as a permeating CPA in some red-cell vitrification protocols.
+- **Ethanol** (#15) and **n-Propanol** (#16). Ethanol is a co-solvent in vitrification cocktails; propanol is used in cryomicroscopy. Both are real CPAs.
+- **n-Butanol** (#19). Less common but in the same primary-alcohol family.
 
-**Plausible biocompatibles** that I'd send to the wet lab without strong opinions either way: niacinamide, sodium PCA, sodium benzoate (despite aromaticity), maltol (#23 just outside the cut-off), gentisic acid (#21).
+That's four real CPAs in the top-20, all surfaced from the FDA pool without any "is a CPA" label in training. v1 only had two (urea + IPA); v2 doubled the count by removing the dye / sodium-salt / organomercurial entries that were crowding out actual candidates.
 
-**Memorization not generalization**: the amino acids in the top-20 (tryptophan, phenylalanine, histidine, arginine, valine, isoleucine, six of twenty) are all in the DOLMEN training set. The model is essentially recovering its own training distribution. They're plausible candidates by the data but they tell you nothing new. A useful follow-up would be to filter `all_scored.csv` to compounds *not in training* and rank from there.
+**Plausible biocompatibles** that I'd send to the wet lab without strong opinions either way: niacinamide (#4), saccharin (#6), benzyl alcohol (#8), gentisic acid (#13), dehydroacetic acid (#14), phenylethyl alcohol (#5).
 
-**Clear model errors** worth calling out before sending the list to anyone:
-- **1-(Phenylazo)-2-naphthylamine** (#6) is a carcinogenic azo dye, not a CPA candidate.
-- **FD&C Blue No. 2** (#7) and **D&C Red No. 33** (#8) are sulfonated polyaromatic food dyes with MW > 466. They pass my CPA filter (MW < 500, HBA ≥ 2 OR HBD ≥ 1) because high HBA from sulfonate groups satisfies the polar criterion. The filter is too permissive.
-- **Metaphosphoric acid** (#15) is a strong inorganic acid; biologically harmful at any concentration.
-- **Phenylmercuric acetate** (#29 in `all_scored.csv`, just outside top-20) is an organomercury preservative, known cytotoxic at concentrations far below CPA-relevant levels. The model rates it favorably because mercury chemistry is nowhere in training.
+**Memorization not generalization**: the amino acids in the top-20 (phenylalanine, tryptophan, histidine, arginine, valine, five of twenty) are all in the DOLMEN training set. The model is recovering its own training distribution for these. They're plausible by the data but they tell you nothing new. A useful follow-up would be to filter `all_scored.csv` to compounds *not in training* and rank from there.
 
-Why these errors happen: with 22 toxicity training compounds (all small alcohols, polyols, and amides)the model has no representation of azo dyes, polysulfonated aromatics, organomercurials, or strong inorganic acids. For OOD chemistry, the predictions converge to the training-set mean (toxicity ≈ 60–67, permeability ≈ 22–29, IRI ≈ 30–50). That's the noise floor: when the model sees something it doesn't know how to evaluate, it predicts "average compound." The composite-score ranking is then dominated by tiny mean differences plus uncertainty terms, not by genuinely-different per-task estimates.
+**Remaining model errors** worth calling out before sending the list to anyone:
+- **Carbon dioxide** (#18) is a gas, only three heavy atoms. The v2 filter let it through because CO₂ has MW=44, logP=-0.6, TPSA=34, no rings, no metals, no azo, no sulfonates. The fix: add a heavy-atom-count minimum (≥ 6) or require at least one C-C bond. This is a one-line filter change for a v2.1.
+- **Benzenesulfonic acid** (#7) and **phenol** (#9) are too acidic / too biologically active at the concentrations CPAs operate at. The v2 filter was correctly more restrictive (it caught FD&C Blue No. 2's *multi*-sulfonate structure) but a single sulfonate on a benzene ring still passes. A pKa filter (pKa > 4) would catch sulfonic acids; phenol is harder because its biological activity is concentration-dependent and structurally indistinguishable from "small polar aromatic."
+- **"Wax"** (#10) is an FDA generic IID label that PubChem resolved to a moclobemide-like structure (a benzamide morpholine, not a wax). Probably an FDA listing artifact rather than a model error; flagged here so a reviewer knows the SMILES doesn't represent the listed material.
 
-This is the honest read for a wet-lab reviewer: at n=22 and n=16 for the small tasks, this top-20 is **a starting point for human triage, not a list to test as-is**. The model rediscovered urea and IPA, which is a real signal; it also rated phenylmercuric acetate favorably, which is a real failure. Both are publishable.
+Why the remaining errors happen: at n=50 toxicity samples and n=16 permeability samples, the model still has no representation of inorganic gases, strong acids, or aromatic-only-with-OH compounds. For OOD chemistry, the predictions converge toward the training mean (mortality ≈ 50-60% at 6 mol/kg, permeability ≈ 22-28, IRI ≈ 35-50), and the composite ranking then promotes whichever OOD compound happens to land closest to the "ideal" mean values. The fix is more training data (Tox21 aux didn't help much), or domain-knowledge filters like the pKa / heavy-atom-count rules above.
+
+This is the honest read for a wet-lab reviewer: at this training scale, this top-20 is **a starting point for human triage, not a list to test as-is**. The model rediscovered urea, ethanol, n-propanol, and n-butanol from a 140-compound pool with no CPA labels, which is a real signal; it also kept CO₂ and benzenesulfonic acid in the top-20, which are real failures. Both are publishable findings.
 
 ---
 
@@ -211,10 +218,9 @@ This is the honest read for a wet-lab reviewer: at n=22 and n=16 for the small t
 
 In the same spirit:
 
-- **CPA-like physicochemical filter is too permissive.** Letting MW < 500 plus HBA ≥ 2 OR HBD ≥ 1 admits sulfonated dyes and aromatic preservatives. A v2 filter (closer to MW < 300, no aromatics, restricted to amides/alcohols/polyols/glycols)would prune the obvious junk from the candidate pool. I left the loose filter in place because tightening it is structurally trivial and I'd rather make the failure mode visible.
-- **Small-task data is not enough for ChemBERTa to generalize under cluster splits.** n=22 toxicity and n=16 permeability with 5 cluster folds means 3-4 test compounds per fold of compounds that are genuinely dissimilar to train. The pretrained model's adapter overfits to spurious correlations on each fold's tiny train set. RF on Morgan FPs is more robust here because the inductive prior (Tanimoto similarity in feature space ≈ structural similarity) approximates exactly what cluster-aware splits enforce.
-- **Toxicity is collapsed across concentrations.** Higgins Dec 2025 measures viability at 3, 6, and 12 mol/kg; I average. That throws away dose-response, which is the most interesting structure in the paper (formamide is fine at 3 mol/kg, untestable at 12). Concentration-aware modeling is the most concrete improvement I'd build first.
-- **Toxicity is from one paper, one cell type, one temperature.** Higgins's Dec 2025 data uses bovine pulmonary artery endothelial cells (BPAEC) at 4 °C with 30 min exposure. Real organ cryopreservation involves multiple cell types, longer exposure, and cooling rates. Tox21 as an auxiliary head (architecture is in place; data load is gated by DeepChem install) would broaden the toxicity-relevant signal substantially.
+- **CPA-like physicochemical filter still has gaps.** v2 tightened it substantially (element whitelist, ring count, no azo, ≤ 1 sulfonate, MW [30, 350], logP < 1.5) and the candidate pool dropped from 435 to 140. Two errors survived: CO₂ (gas, only 3 heavy atoms) and benzenesulfonic acid (single sulfonate is allowed but it's still strongly acidic). A v2.1 fix: heavy-atom-count ≥ 6 and a pKa cutoff would catch both.
+- **Small-task data is still the bottleneck for ChemBERTa under cluster splits.** Even with the Tox21 aux head active in v2 (weight 0.1, 7800 extra compounds), ChemBERTa cluster-ensemble toxicity Spearman is 0.18 (was 0.22 in v1, within noise at n=50). At ~10 toxicity training compounds per fold, the pretrained model's adapter still overfits to spurious correlations. RF on Morgan FPs is more robust here because the inductive prior (Tanimoto similarity in feature space ≈ structural similarity) approximates exactly what cluster-aware splits enforce.
+- **Toxicity is from one paper, one cell type, one temperature.** Higgins's Dec 2025 data uses bovine pulmonary artery endothelial cells (BPAEC) at 4 °C with 30 min exposure. Real organ cryopreservation involves multiple cell types, longer exposure, and cooling rates. The Tox21 aux head was supposed to broaden this; v2 results say it's too low-signal at the recipe I tried. Worth a sweep before declaring it dead.
 - **The Higgins viability values are read from bar charts.** ±5 percentage points precision. If the authors publish raw tables, regenerating is one script in [`data/raw/higgins_dec2025_build.py`](data/raw/higgins_dec2025_build.py).
 - **No mixture modeling.** Higgins's headline finding (formamide alone at 6 mol/kg gives 20% viability; formamide+glycerol at 6+6 = 12 mol/kg gives 97% viability) is *exactly* the regime where CPAs become usable. Single-compound modeling fundamentally can't predict this. The mixture-aware architecture is the lead item in [DESIGN_DOC.md](DESIGN_DOC.md).
 - **No molecular-dynamics features.** Until Labs explicitly couples atomic-scale MD to cellular-scale wet-lab screens; this repo is wet-lab data only. MD-derived hydration metrics (water displacement, H-bond disruption, glass-transition predictions) would be a natural complementary feature set. Discussed in [DESIGN_DOC.md](DESIGN_DOC.md).
@@ -255,15 +261,15 @@ For **ChemBERTa**: the toxicity head takes (pooled, scalar concentration) instea
 
 For **FDA scoring** (where there's no measured concentration), all candidates are predicted at the reference concentration **6 mol/kg**, the mid-range from Higgins Dec 2025 and the inflection point in the formamide/glycerol story.
 
-**Local CPU smoke test result, RF baseline, 5-fold OOF:**
+**Result on the actual Colab run** (Blackwell, full 5-seed cluster ensemble + 5-fold CV, all v2 features active):
 
-| Task | v1 Spearman | v2 Spearman | Change |
-|---|---|---|---|
-| iri | 0.510 | 0.510 | no change (concentration constant for IRI) |
-| toxicity | 0.347 | **0.527** | +0.18 from dose-response |
-| permeability | 0.126 | 0.144 | within noise (concentration constant) |
+| Task | v1 Spearman (random 5-fold) | v2 Spearman (random 5-fold) | v1 (cluster 5-seed) | v2 (cluster 5-seed) |
+|---|---|---|---|---|
+| RF iri | 0.510 | 0.511 | 0.505 | 0.499 |
+| **RF toxicity** | 0.347 | **0.527** (+0.18) | 0.459 | **0.643** (+0.18) |
+| RF permeability | 0.126 | 0.100 | 0.353 | 0.368 |
 
-The **+0.18 toxicity Spearman** is the headline win. R² went from 0.21 to 0.22, so the absolute toxicity error didn't shrink much, but the *rank order* of compounds at each concentration is far better, which is what you actually use for downstream Pareto ranking.
+The **+0.18 jump on toxicity Spearman** is the headline win, holding up consistently across both random and cluster splits. R² also improved (cluster: 0.22 → 0.32). IRI and permeability didn't move (their assay concentration is fixed in training, so concentration as a feature carries no information for those tasks). The toxicity OOF n is now 50 (per (compound, concentration) measurement) instead of 22, so this is a *harder* metric than v1 measured: the model has to capture dose-response, not just compound identity, and the Spearman is reported per-measurement rather than per-compound.
 
 **2. The candidate filter let polysulfonated dyes, organomercurials, and benzyl benzoate into the top-20.** v1's filter was `MW < 500 AND (HBD ≥ 1 OR HBA ≥ 2)`. Sulfonate groups push HBA way past 2, so FD&C Blue No. 2 (MW=466 with two sulfonates) sailed through. v1 also rejected DMSO incorrectly (HBA=1, HBD=0 fails the OR criterion), even though DMSO is the canonical CPA. Both bugs are fixed in v2.
 
@@ -279,7 +285,7 @@ The new filter (`_passes_cpa_filter_v2` in [`src/data/fda_iid.py`](src/data/fda_
 
 Hand-test on the v1 problem cases (verified in `_passes_cpa_filter_v2` unit cases): DMSO ✓, glycerol ✓, urea ✓, formamide ✓, glucose ✓, phenylalanine ✓, histidine ✓, dodecane ✗ (logP), 1-(phenylazo)-2-naphthylamine ✗ (azo), phenylmercuric acetate ✗ (Hg), FD&C Blue No. 2 ✗ (multi-sulfonate + ring count), benzyl benzoate ✗ (logP).
 
-The numerical effect on the candidate pool size and the new top-20 will appear after the next Colab run, since this is what actually rescores the FDA IID. I'll update the table in this README after the run.
+**Result on the actual FDA IID candidate pool**: pool size dropped from **435 → 140** compounds. The top-20 lost FD&C Blue No. 2, D&C Red No. 33, 1-(phenylazo)-2-naphthylamine, phenylmercuric acetate, metaphosphoric acid, and the sodium-salt entries. It gained urea (still there from v1) plus ethanol, n-propanol, and n-butanol (real CPAs the v1 pool was crowding out). Two errors did survive v2 (carbon dioxide at #18 and benzenesulfonic acid at #7); see the candidate-list discussion above for the proposed v2.1 fixes.
 
 **3. The Tox21 aux head was wired in the architecture but never trained.** ChemBERTa-LoRA's `tox21_aux=False` was the default because installing DeepChem on Python 3.12 was broken (no wheel as of April 2026; building from source was a rabbit hole I didn't open). v2 replaces the DeepChem dependency with a direct CSV download from the DeepChem GitHub mirror ([`src/data/tox21.py`](src/data/tox21.py)). The CSV is the same data DeepChem would have given me; I parse it, canonicalize SMILES with RDKit, and emit a long-format parquet with 79K (compound, task) labels across 7,823 unique compounds and 12 binary toxicity assays.
 
@@ -290,7 +296,7 @@ The aux head training recipe (in [`src/models/chemberta_lora.py`](src/models/che
 - BCE is masked: missing `(compound, task)` cells in Tox21 are unmeasured (DeepChem treats them as zero-weight), so the BCE term ignores them.
 - The same `nan_to_num` + `clip_grad_value_(1.0)` safety nets used for the CPA loss apply to the combined loss, so a bad aux batch can't poison training the way the v1 NaN-gradient pathology did.
 
-The honest expectation here is moderate: Tox21 measures nuclear-receptor binding and stress-response activation at submicromolar concentrations on hepatocytes; CPA toxicity is bulk cytotoxicity at multi-molar concentrations on endothelial cells. Direct task transfer is unclear. What I expect is *encoder regularization*: better representations of toxicity-related chemistry, even if the assays themselves are different. We'll see in the Colab run.
+**Result**: ChemBERTa cluster-ensemble toxicity Spearman went from 0.22 (v1, no aux head) to **0.18** (v2, aux head active, weight 0.1). At n=50 the standard error on Spearman is ~0.13, so this 0.04 drop is within noise; calling it a "win" or a "loss" is overinterpreting at this sample size. The honest read is that at *this* training scale the aux signal is too weak to overcome the basic small-data limitation, and Tox21's nuclear-receptor / stress-response assays at submicromolar concentrations on hepatocytes don't transfer cleanly to bulk cytotoxicity at multi-molar concentrations on endothelial cells (which is what we actually care about). The architecture is in place for follow-up sweeps over weight, training schedule, and aux-task choice; v2 says the obvious starting recipe doesn't pay off.
 
 ### Engineering notes worth recording
 
