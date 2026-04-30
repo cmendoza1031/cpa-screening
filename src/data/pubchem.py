@@ -143,7 +143,15 @@ def name_or_cas_to_smiles(
     cache[key] = smiles or ""
     if smiles is None:
         _log_failure(kind, query, last_err or "unknown")
-        log.info("pubchem MISS [%s] %s -> %s", kind, pubchem_query, last_err)
+        # Per-miss logs go to FAILURES_PATH on disk (auditable). The Colab
+        # cell output used to be drowned out by ~1500 of these per FDA IID
+        # build because the FDA IID lists hundreds of polymer trade names
+        # ("DURO-TAK 87-2194"), botanical extracts ("ACACIA", "ZEIN"), and
+        # generic listings ("WHITE WAX", "PETROLATUM") that PubChem can't
+        # resolve to a single small molecule. Per the spec, we log + skip
+        # without fabricating; the disk log is the place to look at the
+        # specifics, the cell log only gets a final hit-rate summary.
+        log.debug("pubchem MISS [%s] %s -> %s", kind, pubchem_query, last_err)
     else:
         log.debug("pubchem HIT [%s] %s -> %s", kind, pubchem_query, smiles)
 
