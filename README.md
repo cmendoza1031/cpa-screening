@@ -404,22 +404,22 @@ Of 125 v3-filtered candidates, 12 (9.6%) overlap with training; the novel list i
 
 The v2 hypothesis was "Tox21 aux head should boost ChemBERTa toxicity". Actual v2 result was 0.181 (vs no-aux 0.217), a 0.04 drop within noise at n=50. That doesn't cleanly say the aux head fails; it could be the chosen weight (0.1) is too high, too low, or just a noise sample. The sweep at 6 weights `{0.0, 0.05, 0.1, 0.2, 0.5, 1.0}` ([`src/sweep_tox21_aux.py`](src/sweep_tox21_aux.py)) settles the question.
 
-**Result on Colab (the most-likely outcome materialized)**: best aux weight is **0.0** at toxicity Spearman 0.150. All non-zero weights produce worse toxicity Spearman (0.10-0.13 range). Permeability and IRI degrade monotonically as the aux weight grows:
+**Result on Colab**: across the multi-task picture, the best aux weight is effectively **0.0**. The toxicity-only column is non-monotonic (low weights hurt, high weights recover to roughly no-aux), but permeability and IRI both degrade monotonically with weight, so the multi-task verdict is clear.
 
 | aux_weight | toxicity Spearman | permeability Spearman | iri Spearman |
 |---|---|---|---|
-| **0.00 (no aux)** | **0.150** | 0.035 | **0.417** |
-| 0.05 | 0.107 | 0.038 | 0.404 |
-| 0.10 | 0.101 | 0.038 | 0.405 |
-| 0.20 | 0.104 | 0.038 | 0.406 |
-| 0.50 | 0.133 | -0.082 | 0.386 |
-| 1.00 | 0.105 | -0.241 | 0.370 |
+| **0.00 (no aux)** | **0.148** | **0.035** | **0.417** |
+| 0.05 | 0.110 | 0.015 | 0.404 |
+| 0.10 | 0.105 | 0.015 | 0.405 |
+| 0.20 | 0.110 | 0.026 | 0.405 |
+| 0.50 | 0.152 | -0.112 | 0.388 |
+| 1.00 | 0.147 | -0.247 | 0.373 |
 
-(Numbers from `results/sweeps/tox21_aux_sweep.csv`; ChemBERTa single-seed 5-fold CV OOF.)
+(Numbers from `results/sweeps/tox21_aux_sweep.csv`; ChemBERTa single-seed 5-fold CV OOF. At n=50 the standard error on toxicity Spearman is ~0.13, so all six toxicity numbers are statistically indistinguishable from each other and from no-aux. Two consecutive runs of the same sweep gave 0.5-weight toxicity of 0.133 and 0.152; this is the noise floor.)
 
-**Verdict**: the Tox21 signal genuinely doesn't transfer to CPA cytotoxicity at this training scale. Tuning the aux weight only minimizes the damage; it cannot make the signal helpful. This is consistent with the structural mismatch between the two tasks: Tox21 measures nuclear-receptor binding and stress-response activation at submicromolar concentrations on hepatocytes, while CPA cytotoxicity is bulk cell death at multi-molar concentrations on endothelial cells. The encoder representations that help one don't help the other.
+**Verdict**: the Tox21 signal does not transfer to CPA cytotoxicity at this training scale, and the multi-task picture (where permeability collapses at high aux weights and IRI degrades steadily) confirms it. The toxicity column alone is noise-dominated and cherry-picking the best toxicity row would be misleading. The honest read of the full table is: **any non-zero aux weight either hurts toxicity (low) or destroys permeability (high)**; no recipe makes Tox21 a net positive at this scale.
 
-The v2 choice (weight 0.1) wasn't even the worst; it tied with 0.2 around 0.10. But ANY positive weight underperforms no-aux. If the next iteration wanted to bring in broader toxicity signal, the right move is a different auxiliary task (DrugBank toxicity, in vivo LD50 datasets, or Until's internal screens), not Tox21 with a different weight.
+This is consistent with the structural mismatch between the two tasks: Tox21 measures nuclear-receptor binding and stress-response activation at submicromolar concentrations on hepatocytes, while CPA cytotoxicity is bulk cell death at multi-molar concentrations on endothelial cells. The encoder representations that help one don't help the other. If the next iteration wanted broader toxicity signal, the right move is a different auxiliary task (DrugBank toxicity, in vivo LD50 datasets, or Until's internal screens), not Tox21 with a different weight.
 
 ---
 
