@@ -367,13 +367,13 @@ def train_chemberta_ensemble_kfold(
 
     out: dict[str, dict] = {}
     for t in REG_TASKS:
-        # Build (key -> y_true) lookup. For toxicity the key is "smi@conc"
+        # Build (key -> y_true) lookup. For toxicity the key is "smi|conc"
         # because we predict at every measured concentration; for IRI /
         # permeability the key is the bare smiles.
         sub = wide.dropna(subset=[t])
         if t == "toxicity":
             key_to_y = {
-                f"{r['smiles_canonical']}@{float(r['concentration_mol_kg']):g}":
+                f"{r['smiles_canonical']}|{float(r['concentration_mol_kg']):g}":
                     float(r[t])
                 for _, r in sub.iterrows()
             }
@@ -390,7 +390,7 @@ def train_chemberta_ensemble_kfold(
         coverage = empirical_coverage(y, means, q95)
         out[t] = {
             "task": t,
-            "smi_oof": keys,  # for toxicity these are "smi@conc" strings
+            "smi_oof": keys,  # for toxicity these are "smi|conc" strings
             "y_oof": y,
             "mean_oof": means,
             "std_oof": stds,

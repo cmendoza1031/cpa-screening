@@ -8,6 +8,25 @@ data/.cache/
 !data/raw/higgins_jan2025.csv
 !data/raw/higgins_dec2025.csv
 !data/raw/higgins_dec2025_build.py
+# Track the small processed parquets so reviewers can inspect what the
+# pipeline produces without having to run it. Tox21 parquet (208 KB) is
+# excluded because it's auto-downloaded from the DeepChem mirror.
+!data/processed/audit.json
+!data/processed/long.parquet
+!data/processed/dolmen.parquet
+!data/processed/higgins_jan2025.parquet
+!data/processed/higgins_dec2025.parquet
+!data/processed/higgins_mixtures.parquet
+!data/processed/fda_iid_candidates.parquet
+# Track key processed artifacts so a reviewer can inspect what was built
+# without running the pipeline first. These are small parquets / JSONs, not
+# the bulky FDA/Tox21 downloads which still get regenerated on first run.
+!data/processed/audit.json
+!data/processed/long.parquet
+!data/processed/higgins_jan2025.parquet
+!data/processed/higgins_dec2025.parquet
+!data/processed/higgins_mixtures.parquet
+!data/processed/dolmen.parquet
 results/figures/*
 results/candidates/*
 !results/figures/.gitkeep

@@ -803,7 +803,7 @@ def _predict_smiles(
         # Key by (smi, conc) for toxicity (multiple per compound), smi for others.
         if t == "toxicity":
             for (s, c), v in zip(cond_rows, preds[t]):
-                out[t][f"{s}@{c:g}"] = float(v)
+                out[t][f"{s}|{c:g}"] = float(v)
         else:
             for (s, _c), v in zip(cond_rows, preds[t]):
                 out[t][s] = float(v)
@@ -833,7 +833,7 @@ def _eval_per_task(
 ) -> dict[str, tuple[np.ndarray, np.ndarray]]:
     """Build per-task (y_true, y_pred) arrays from the predictions dict.
 
-    For toxicity, prediction keys are "smiles@concentration" (multiple
+    For toxicity, prediction keys are "smiles|concentration" (multiple
     measurements per compound); for IRI / permeability, keys are smiles.
     Returns aligned (y, yhat) arrays per task, dropping rows where the
     prediction wasn't computed.
@@ -845,7 +845,7 @@ def _eval_per_task(
         for _, row in sub.iterrows():
             s = row["smiles_canonical"]
             c = float(row["concentration_mol_kg"])
-            key = f"{s}@{c:g}" if t == "toxicity" else s
+            key = f"{s}|{c:g}" if t == "toxicity" else s
             if key in smi_to_pred[t]:
                 ys.append(float(row[t]))
                 yhats.append(smi_to_pred[t][key])
@@ -954,10 +954,10 @@ def _train_chemberta_kfold(
         for _, row in sub.iterrows():
             s = row["smiles_canonical"]
             c = float(row["concentration_mol_kg"])
-            # Toxicity OOF preds are keyed by "smi@conc" because the same
+            # Toxicity OOF preds are keyed by "smi|conc" because the same
             # compound is predicted at multiple measured concentrations;
             # IRI / permeability are keyed by bare smiles.
-            key = f"{s}@{c:g}" if t == "toxicity" else s
+            key = f"{s}|{c:g}" if t == "toxicity" else s
             if key in oof[t]:
                 ys.append(float(row[t]))
                 yhats.append(oof[t][key])

@@ -105,7 +105,9 @@ def _spearman_summary_plot() -> Path:
 
 def _pareto_2d_top20_plot() -> Path | None:
     """2D Pareto: predicted toxicity (x) vs predicted permeability (y),
-    color = predicted IRI. Top-20 candidates highlighted with names."""
+    color = predicted IRI. Top-20 candidates highlighted; top-5 labeled
+    with hand-tuned offsets to avoid collisions with the marker circles.
+    """
     if not TOP20_PATH.exists():
         log.warning("no %s; skipping pareto plot", TOP20_PATH)
         return None
@@ -118,39 +120,64 @@ def _pareto_2d_top20_plot() -> Path | None:
     all_df = pd.read_csv(all_path)
     top = pd.read_csv(TOP20_PATH)
 
-    fig, ax = plt.subplots(figsize=(8.5, 6))
+    fig, ax = plt.subplots(figsize=(9, 6.5))
+    # Background: all candidates, colored by predicted IRI
     sc = ax.scatter(
         all_df["toxicity_mean"],
         all_df["permeability_mean"],
         c=all_df["iri_mean"],
-        s=12, alpha=0.55, cmap="viridis_r",
-        edgecolors="none",
+        s=22, alpha=0.65, cmap="viridis_r",
+        edgecolors="white", linewidths=0.4,
     )
-    cbar = plt.colorbar(sc, ax=ax)
-    cbar.set_label("predicted IRI %MGS  (lower = stronger inhibition)")
+    cbar = plt.colorbar(sc, ax=ax, pad=0.02)
+    cbar.set_label("predicted IRI %MGS  (lower = stronger inhibition)", fontsize=10)
 
-    # Top-20 highlight
+    # Top-20 highlighted as red rings
     ax.scatter(
         top["toxicity_mean"], top["permeability_mean"],
-        s=80, facecolors="none", edgecolors="red", linewidths=1.5, zorder=4,
+        s=180, facecolors="none", edgecolors="#d62728", linewidths=1.8, zorder=4,
         label=f"top-{len(top)} (Pareto + composite)",
     )
-    # Annotate top-5 with names
-    for _, row in top.head(5).iterrows():
-        ax.annotate(
-            row["ingredient_name"][:24].title(),
-            (row["toxicity_mean"], row["permeability_mean"]),
-            fontsize=8, xytext=(5, 5), textcoords="offset points",
-            color="darkred",
-        )
 
-    ax.set_xlabel("predicted toxicity  (mortality % at 4 °C; lower = better)")
-    ax.set_ylabel("predicted permeability  (P_CPA × 10⁻³ s⁻¹; higher = better)")
+    # Label top-5 with adjustText so labels don't collide with markers or
+    # each other. The top-5 candidates cluster tightly in (toxicity,
+    # permeability) space, so any fixed-offset scheme stacks labels on top
+    # of each other. adjustText runs an iterative force-based layout that
+    # repels labels from points, axes, and other labels, then draws leader
+    # lines to the original markers.
+    from adjustText import adjust_text
+
+    n_label = min(5, len(top))
+    texts = []
+    for _, row in top.head(n_label).iterrows():
+        t = ax.text(
+            row["toxicity_mean"], row["permeability_mean"],
+            row["ingredient_name"][:24].title(),
+            fontsize=9, color="#8b0000", weight="medium",
+            bbox=dict(
+                boxstyle="round,pad=0.25", fc="white", ec="#8b0000",
+                lw=0.7, alpha=0.95,
+            ),
+        )
+        texts.append(t)
+    adjust_text(
+        texts,
+        ax=ax,
+        arrowprops=dict(arrowstyle="-", color="#8b0000", lw=0.8, alpha=0.75),
+        expand=(2.0, 2.0),
+        force_text=(1.2, 1.4),
+        force_static=(1.0, 1.2),
+        only_move={"points": "xy", "text": "xy", "objects": "xy"},
+    )
+
+    ax.set_xlabel("predicted toxicity  (mortality % at 6 mol/kg, 4 °C; lower = better)", fontsize=10)
+    ax.set_ylabel("predicted permeability  (P_CPA × 10⁻³ s⁻¹; higher = better)", fontsize=10)
     ax.set_title(
         f"FDA IID candidates scored by ChemBERTa ensemble (n={len(all_df)})\n"
-        "circles = top-20 by Pareto + composite score"
+        f"red rings: top-{len(top)} by Pareto + composite score",
+        fontsize=11,
     )
-    ax.legend(loc="upper right", frameon=True, fontsize=9)
+    ax.legend(loc="lower right", frameon=True, fontsize=9, framealpha=0.95)
     ax.grid(linestyle="--", alpha=0.3)
     fig.tight_layout()
     out = FIGURES_DIR / "pareto_2d_top20.png"

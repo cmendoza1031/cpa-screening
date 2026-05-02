@@ -20,7 +20,7 @@ python -m src.score_candidates --architecture both --n-seeds 5 --top-k 20
 python -m src.figures
 ```
 
-Or open `[colab_runner.ipynb](colab_runner.ipynb)` and run top-to-bottom on a Colab Pro GPU. Total wall-clock on Blackwell: ~25 min.
+Or open `[colab_runner.ipynb](colab_runner.ipynb)` and run top-to-bottom on a Colab Pro GPU.
 
 For the iteration history (v1 → v2 → v2.1, what each version predicted, what actually happened, and how the top-20 candidate lists changed across versions), see [ITERATION_LOG.md](ITERATION_LOG.md).
 
@@ -149,7 +149,7 @@ These are the **v2 numbers** with concentration-aware toxicity, the tighter CPA 
 
 The toxicity OOF n is **50** (not 22) under v2 because each (compound, concentration) measurement from Higgins Dec 2025 is now its own row. Predicting toxicity is therefore a harder task in v2 than v1: the model has to capture dose-response, not just compound identity. RF still gains substantially at this harder target (cluster-ensemble Spearman 0.46 → 0.64); ChemBERTa stays flat-to-slightly-down within noise.
 
-The single-seed ChemBERTa toxicity row is missing from this table because of an OOF aggregation bug in the run that produced these numbers (toxicity predictions were keyed by `"smi@conc"` strings but looked up by bare smiles in the single-seed code path). The cluster-ensemble path used a different aggregator and was unaffected. The bug is fixed in the current code and will produce a real number on the next run; the cluster-ensemble row above is the comparable headline result anyway.
+The single-seed ChemBERTa toxicity row is missing from this table because of an OOF aggregation bug in the run that produced these numbers (toxicity predictions were keyed by `"smi|conc"` strings but looked up by bare smiles in the single-seed code path). The cluster-ensemble path used a different aggregator and was unaffected. The bug is fixed in the current code and will produce a real number on the next run; the cluster-ensemble row above is the comparable headline result anyway.
 
 ### Key findings
 
@@ -201,29 +201,32 @@ Full ranking + predictions for all 140 scored v2 candidates: `[results/candidate
 
 ### Reading the candidate list honestly
 
-The list mixes real wins, plausible biocompatibles, and a couple of obvious model errors that survived even the v2 filter. I'm leaving them all in the table because **a virtual screen that hides its failures is much worse than one that surfaces them**. The remaining errors are diagnostic.
+The list mixes real CPAs the model has signal on, compounds that look CPA-shaped to the physicochemical filter but aren't actually used as CPAs, and DOLMEN-train memorization. The honest categorization:
 
-**Real wins** (known cryoprotectants the model rediscovered without being told they were CPAs):
+**Compounds the model has actual signal on** (known CPAs):
 
-- **Urea** (#12). Used in slow-freeze of red blood cells and as a permeating CPA in some red-cell vitrification protocols.
-- **Ethanol** (#15) and **n-Propanol** (#16). Ethanol is a co-solvent in vitrification cocktails; propanol is used in cryomicroscopy. Both are real CPAs.
-- **n-Butanol** (#19). Less common but in the same primary-alcohol family.
+- **Urea** (#5). Used in slow-freeze of red blood cells and as a permeating CPA in some red-cell vitrification protocols. In single-compound training.
+- **Ethanol** ("Alcohol", #12). Co-solvent in vitrification cocktails. Not in CPA training but the model's prediction (toxicity 53 at 6 mol/kg) is plausible.
+- **n-Propanol** (#13) and **n-Butanol** (#17). Used in cryomicroscopy. Same family as ethanol; the model generalizes within the small-primary-alcohol scaffold.
+- **Acetone** (#14). Used as a cryomicroscopy solvent and in some non-aqueous CPA contexts. Not in training; model gets a reasonable prediction.
+- **N,N-Dimethylacetamide** (#19). Real CPA (the "DMA" abbreviation in Higgins Dec 2025). In training.
 
-That's four real CPAs in the top-20, all surfaced from the FDA pool without any "is a CPA" label in training. v1 only had two (urea + IPA); v2 doubled the count by removing the dye / sodium-salt / organomercurial entries that were crowding out actual candidates.
+That's five known CPAs and one in-training compound, surfaced from the FDA pool without any "is a CPA" label in training. v1 had two; v2 had four; v3 has five.
 
-**Plausible biocompatibles** that I'd send to the wet lab without strong opinions either way: niacinamide (#4), saccharin (#6), benzyl alcohol (#8), gentisic acid (#13), dehydroacetic acid (#14), phenylethyl alcohol (#5).
+**Compounds defaulting to the training mean** (the OOD problem):
 
-**Memorization not generalization**: the amino acids in the top-20 (phenylalanine, tryptophan, histidine, arginine, valine, five of twenty) are all in the DOLMEN training set. The model is recovering its own training distribution for these. They're plausible by the data but they tell you nothing new. A useful follow-up would be to filter `all_scored.csv` to compounds *not in training* and rank from there.
+The toxicity training set is 22 small alcohols, polyols, amides, and sulfoxides. For chemistry outside that distribution, the model has no signal and predictions converge toward the training mean (mortality ≈ 55-60% at 6 mol/kg, permeability ≈ 24-27, IRI ≈ 35-50). Compounds that happen to land close to the "ideal mean" values get high composite scores by accident:
 
-**Remaining model errors** worth calling out before sending the list to anyone:
+- **Phenylalanine, tryptophan, histidine, arginine, valine, methionine** (5 of top-20, plus methionine and 2 lysines). All in DOLMEN training; pure memorization on IRI; defaults to training mean on toxicity. Plausible biocompatible chemistry but not real CPAs.
+- **Niacinamide** (#3, vitamin B₃). Skincare humectant, not a CPA. Predicted toxicity 60.0 (training mean), permeability 26.5 (mean), IRI 34.5 (mean). Pure OOD with mean-default predictions.
+- **Saccharin** (#4) and **aspartame** (in novel-only top-20 #5). Sweeteners, not CPAs. Same story.
+- **Phenoxyethanol** (#7), **dehydroacetic acid** (#9), **benzocaine** (novel #9), **methylparaben** (novel #11). Cosmetic preservatives. Not CPAs. Mean-default predictions.
 
-- **Carbon dioxide** (#18) is a gas, only three heavy atoms. The v2 filter let it through because CO₂ has MW=44, logP=-0.6, TPSA=34, no rings, no metals, no azo, no sulfonates. The fix: add a heavy-atom-count minimum (≥ 6) or require at least one C-C bond. This is a one-line filter change for a v2.1.
-- **Benzenesulfonic acid** (#7) and **phenol** (#9) are too acidic / too biologically active at the concentrations CPAs operate at. The v2 filter was correctly more restrictive (it caught FD&C Blue No. 2's *multi*-sulfonate structure) but a single sulfonate on a benzene ring still passes. A pKa filter (pKa > 4) would catch sulfonic acids; phenol is harder because its biological activity is concentration-dependent and structurally indistinguishable from "small polar aromatic."
-- **"Wax"** (#10) is an FDA generic IID label that PubChem resolved to a moclobemide-like structure (a benzamide morpholine, not a wax). Probably an FDA listing artifact rather than a model error; flagged here so a reviewer knows the SMILES doesn't represent the listed material.
+The pattern: for compounds the model has no in-training analog for, the predictions are noise around the training mean, and whatever OOD compound happens to land closest to the "ideal" gets ranked. **The composite score is fooling itself** in this regime; the top-20 is partly a list of "compounds whose mean-default predictions happen to look good" rather than "compounds the model has informed opinions on."
 
-Why the remaining errors happen: at n=50 toxicity samples and n=16 permeability samples, the model still has no representation of inorganic gases, strong acids, or aromatic-only-with-OH compounds. For OOD chemistry, the predictions converge toward the training mean (mortality ≈ 50-60% at 6 mol/kg, permeability ≈ 22-28, IRI ≈ 35-50), and the composite ranking then promotes whichever OOD compound happens to land closest to the "ideal" mean values. The fix is more training data (Tox21 aux didn't help much), or domain-knowledge filters like the pKa / heavy-atom-count rules above.
+A reviewer should treat the list as: **5 real CPAs to be expected, 5-7 OOD compounds whose ranking is essentially noise, 5+ memorized amino acids.** The QbC disagreement analysis (`results/candidates/top_disagreement.csv`) is a more useful artifact for active learning because it surfaces compounds where RF and ChemBERTa disagree most, which is exactly where wet-lab measurement adds the most information.
 
-This is the honest read for a wet-lab reviewer: at this training scale, this top-20 is **a starting point for human triage, not a list to test as-is**. The model rediscovered urea, ethanol, n-propanol, and n-butanol from a 140-compound pool with no CPA labels, which is a real signal; it also kept CO₂ and benzenesulfonic acid in the top-20, which are real failures. Both are publishable findings.
+**No clear errors survived v2.1 filter** (no CO₂, no benzenesulfonic acid, no phenol, no benzaldehyde, no ethylene oxide, no formaldehyde). That's the v2.1 filter doing its job. But the OOD-mean-default problem can't be solved by filtering: it needs more diverse toxicity training data (different cell types, different temperatures, different chemistry classes).
 
 ---
 
@@ -296,9 +299,15 @@ Top-10 of the resulting list (full ranking in [`results/mixtures/top20_pairs.csv
 
 **Major shift from v2.1 → v3**: the v2.1 filter dropped benzaldehyde (which dominated 11 of the v2.1 top-20 mixture pairs), so the v3 list is now **dominated by alcohol/diol pairs** that are plausible CPA-adjacent chemistry. **DMSO + propylene glycol stays at the top**, three DOLMEN amino-acid pairs are memorization (#2, #4, #7), and the rest is ethanol / propanol / butanol / propylene glycol / butylene glycol combinations that look like the kind of pairs a cryomicroscopy lab would actually mix.
 
-The headline finding **DMSO + propylene glycol at rank 1** is unchanged from v2.1, and the additive-baseline rediscovery of a real cryomicroscopy CPA combination from no mixture training labels remains the strongest result in this section. What changed is the *floor*: v2.1's top-20 had 6 model errors (benzaldehyde, phenol, H₂O₂, formaldehyde, etc.) propagating from single-compound predictions; v3's top-10 has zero clear errors, with the only weak entries being amino-acid memorization pairs and ambiguous IID labels ("fatty acid esters" is generic).
+**DMSO + propylene glycol at rank 1** is the strongest pair in the list, and worth being precise about what this means as a finding:
 
-Honest framing for a wet-lab reviewer: this list still has the additive-baseline structural limit (it can't surface formamide+glycerol-style neutralization), but it's now also free of single-compound model errors. **DMSO+propylene glycol at #1 is the real signal; the alcohol/diol cluster is plausible-but-untested; the amino-acid pairs are model self-consistency on training data.**
+- DMSO and propylene glycol are **both in the single-compound training set** (Higgins Dec 2025 measures both at 3, 6, 12 mol/kg). The model is rating them individually as low-toxicity / high-permeability because it memorized them.
+- The additive `max` rule then combines two memorized predictions and pulls their pair to the top of the FDA mixture-pair ranking.
+- So this is **not** "the model rediscovered a CPA cocktail it had never seen." It's "two memorized single-compound predictions, combined under a fixed additive rule, recover a known-good combination."
+
+That's a useful pipeline-self-consistency check (the chained inference doesn't break or surface garbage at the top), but it's NOT evidence the model has learned anything about mixtures. A genuine mixture-aware result would require predicting mixture viability separately from individual viabilities and capturing the interaction term that an additive rule cannot. The PairEncoder experiment in v4 (see ITERATION_LOG.md) is the first cut at that.
+
+What changed in v3: v2.1's top-20 had 6 model errors (benzaldehyde, phenol, H₂O₂, formaldehyde, etc.) propagating from single-compound predictions. The v2.1 filter eliminated those, so v3's top-10 is alcohol/diol pairs (plausible but mostly memorization-based) plus three DOLMEN amino-acid pairs (also memorization). Zero clear errors but also zero genuine novel mixture signal.
 
 ### Day-one ask at Until (mixture data)
 
@@ -423,15 +432,71 @@ This is consistent with the structural mismatch between the two tasks: Tox21 mea
 
 ---
 
+## v4: query-by-committee, PairEncoder training, honest framing
+
+After v3 shipped I went back through the candidate list with a domain-skeptical eye and identified four real gaps: (1) the "DMSO + propylene glycol rediscovery" framing oversold a result that's mostly memorization-based, (2) the candidate top-20 has compounds defaulting to training-mean predictions because they're OOD chemistry the model has no signal on, (3) the 5-seed deep ensembles capture within-architecture uncertainty but say nothing about model-class disagreement, and (4) the PairEncoder was documented but never trained.
+
+### Query-by-committee disagreement (`src/qbc.py`)
+
+The 5-seed deep ensembles in `src/models/ensemble.py` give epistemic uncertainty WITHIN each architecture (variance across seeds of the same model class). They cannot capture the kind of uncertainty that comes from **model-class disagreement**. RF on Morgan fingerprints and ChemBERTa-LoRA encode molecular similarity differently, and where they disagree on a candidate's predicted toxicity, neither one is necessarily right. The QbC module reads `all_scored.csv` with both architectures' predictions side-by-side, computes per-task disagreement, z-scores across the three tasks, and ranks candidates by L2-norm disagreement.
+
+The output (`results/candidates/top_disagreement.csv`) is the right "next to test" list for active learning. If both architectures agree a compound is good or bad, a wet-lab measurement on it is mostly redundant. If they disagree by 40 percentage points on toxicity, screening that compound resolves the disagreement and constrains both models for the next training cycle.
+
+**Top-3 from local smoke** (full pipeline runs in Colab):
+
+| Rank | Compound | RF tox | ChemBERTa tox | Disagreement | Why it matters |
+|---:|---|---|---|---|---|
+| 1 | **DMSO** | 14.2 | 58.5 | 44.4 pp | RF correctly assigns low toxicity (DMSO is the canonical CPA, in training); ChemBERTa just predicts the training mean. The QbC metric automatically surfaces this miss. |
+| 2 | **Propylene glycol** | 23.1 | 54.8 | 31.8 pp | Same pattern: real CPA, in training, RF gets it right, ChemBERTa defaults to mean. |
+| 3 | N-acetyl-D-alanine | 59.7 | 61.5 | small on tox | Big disagreement on IRI (94 vs 52), permeability (21 vs 25). |
+
+Two takeaways: (a) the QbC metric rediscovers the OOD-mean-default failure mode automatically without us having to label it, and (b) for actively-learning compounds the model has signal on, the disagreement-ranked list is a better acquisition function than composite-score ranking.
+
+### PairEncoder training on the 16-mixture dataset (`src/models/mixture.py:train_pair_encoder_loo`)
+
+v2.1 documented the PairEncoder architecture but said "16 rows is too few to train". v4 actually trains it (RF backbone on symmetric pair fingerprint features, leave-one-pair-out CV) so we have a real number for how badly it fails:
+
+| Model | Spearman vs measured viability | MAE | R² |
+|---|---|---|---|
+| Constant predictor (always mean mortality) | 0.00 | ~22 | 0.00 |
+| Additive baseline (max rule) | +0.18 | 20.4 | -0.08 |
+| Additive baseline (mean rule) | +0.22 | 20.2 | -0.18 |
+| **PairEncoder LOO (n=16, all glycerol-paired)** | **−0.72** | 26.5 | **−0.92** |
+
+The PairEncoder is **anti-correlated with measured mixture viability**, worse than predicting the constant mean. Concrete failure case: glycerol+DMSO@12 mol/kg has measured mortality 90 (10% viability) but the PairEncoder predicts 25 (75% viability). Same direction-flip on glycerol+propylene glycol@12 (actual 100, predicted 22).
+
+Why: with 16 rows all sharing glycerol as one component, the model can only learn "what does compound X (paired with glycerol) do to toxicity," and at 6 vs 12 mol/kg total, the same compound flips behavior dramatically (formamide neutralizes at 12, propylene glycol becomes lethal). 16 rows can't capture both regimes.
+
+**This is conclusive evidence the data, not the architecture, is the rate limiter.** A learned interaction term needs cross-component diversity (not just glycerol-paired) and concentration coverage (not just two values). The day-one ask at Until remains: more mixture data.
+
+The neural PairEncoder architecture (shared ChemBERTa-LoRA encoder + symmetric features + interaction term + concentration features) is documented in `_pair_encoder_neural_sketch` for when the data scales.
+
+### Honest framing fixes
+
+Two readings of the v3 candidate list got tightened:
+
+- **DMSO + propylene glycol at #1 of mixture pairs is partially memorization.** Both compounds are in single-compound training; the additive baseline combines two memorized predictions. Useful pipeline-self-consistency check, but not "rediscovery from no mixture training labels." Documented inline in the FDA mixture pair scoring section above.
+- **The OOD-mean-default failure** explains why niacinamide / saccharin / aspartame / phenoxyethanol / dehydroacetic acid / benzocaine / methylparaben rank highly in the candidate top-20 despite not being real CPAs. The toxicity training set is 22 small alcohols/polyols/amides/sulfoxides; for chemistry outside that distribution, the model converges to the training mean (~55-60 mortality, ~24-27 permeability, ~35-50 IRI), and whichever OOD compound happens to land closest to "ideal mean" gets ranked. This isn't a bug fixable by filtering; it requires more diverse toxicity training data. Documented in the candidate-list section above.
+
+### Tier 1 polish
+
+- **SMILES pre-resolved** in `data/raw/higgins_jan2025.csv` and `higgins_dec2025.csv`. CSVs are now self-contained without PubChem network access.
+- **Small processed parquets tracked** in git (`audit.json`, `long.parquet`, `dolmen.parquet`, all the `higgins_*.parquet`, `fda_iid_candidates.parquet`). Reviewers can inspect what the pipeline produces without running it. Tox21 (208 KB) stays gitignored since it's auto-downloaded.
+- **Pareto figures cleaned up**: 2D plot now uses `adjustText` for collision-free top-5 labels with leader lines; 3D plot uses darker gray (#7d7d7d) for dominated points so they're visible against the white background.
+- **Time/cost estimates removed** from notebook + .py files. The "set the GPU runtime" patronizing notes are gone.
+
+---
+
 ## Limitations
 
 In the same spirit:
 
-- **CPA-like physicochemical filter is now in v2.1**, addressing the CO₂ / benzenesulfonic-acid / phenol / benzaldehyde leaks from v2. See [v3 above](#v3-filter-v21-novel-only-top-20-tox21-aux-weight-sweep) for the criteria and the predicted impact on the candidate pool. Remaining filter gaps will be visible after the Colab run; document them honestly when they appear.
-- **Small-task data is still the bottleneck for ChemBERTa under cluster splits.** ChemBERTa cluster-ensemble toxicity Spearman is 0.18 (vs RF's 0.64). At ~10 toxicity training compounds per fold, the pretrained model's adapter overfits to spurious correlations. RF on Morgan FPs is more robust here because the inductive prior (Tanimoto similarity in feature space ≈ structural similarity) approximates exactly what cluster-aware splits enforce. The v3 Tox21-aux weight sweep will tell us whether the aux head signal can be tuned to help; the current best guess is "no, the signal is too weak at any reasonable weight at this scale".
-- **Toxicity is from one paper, one cell type, one temperature.** Higgins's Dec 2025 data uses bovine pulmonary artery endothelial cells (BPAEC) at 4 °C with 30 min exposure. Real organ cryopreservation involves multiple cell types, longer exposure, and cooling rates. Tox21 was supposed to broaden this signal; v2 results suggested it didn't help, and v3's sweep will give a definitive answer.
-- **The Higgins viability values are read from bar charts.** ±5 percentage points precision. If the authors publish raw tables, regenerating is one script in `[data/raw/higgins_dec2025_build.py](data/raw/higgins_dec2025_build.py)`.
-- **Mixture-aware model is data-limited, not architecture-limited.** v2.1 ships the `PairEncoder` architecture and quantifies the failure mode of additive baselines on 16 known binary mixtures (Spearman ≈ 0.20 across rules; formamide+glycerol@12 mol/kg miss by 63-95 pp). The architecture would train at 200+ mixture rows; the rate-limiter is data extraction from Higgins's supplementary tables and Until's internal screens. See [Mixture-aware analysis (v2.1)](#mixture-aware-analysis-v21) for the headline numbers.
+- **OOD chemistry defaults to training-mean predictions.** The 22-compound toxicity training set covers small alcohols, polyols, amides, sulfoxides. For anything outside that distribution (aromatics without amino-acid context, sulfonates, organomercurials, etc.) the model has no signal and predictions converge to the training mean. This makes the candidate top-20 partly a list of "OOD compounds whose mean-default predictions happen to look CPA-shaped." Filtering can't fix this; only more diverse toxicity training data can. The QbC disagreement list is a better artifact for active learning because it automatically flags the OOD cases.
+- **CPA-like physicochemical filter is now at v2.1**, addressing the CO₂ / benzenesulfonic-acid / phenol / benzaldehyde leaks from v2. Remaining filter gaps will be visible after the next Colab run; document them honestly when they appear.
+- **Small-task data is the bottleneck for ChemBERTa under cluster splits.** ChemBERTa cluster-ensemble toxicity Spearman is 0.18 (vs RF's 0.64). At ~10 toxicity training compounds per fold, the pretrained model's adapter overfits to spurious correlations. RF on Morgan FPs is more robust here because the inductive prior (Tanimoto similarity in feature space ≈ structural similarity) approximates what cluster-aware splits enforce. The v3 Tox21-aux weight sweep settled this: at this scale, no aux weight makes Tox21 a net positive.
+- **Toxicity is from one paper, one cell type, one temperature.** Higgins's Dec 2025 data uses bovine pulmonary artery endothelial cells (BPAEC) at 4 °C with 30 min exposure. Real organ cryopreservation involves multiple cell types, longer exposure, and cooling rates.
+- **The Higgins viability values are read from bar charts.** ±5 percentage points precision. The publisher does not provide a numeric data table, and PubMed/PMC/bioRxiv block automated figure-image downloads. The v4 work uses 50 single-compound rows + 16 binary mixtures (all glycerol-paired) extracted by visual inspection of Figures 2-4 and 6-9. Expanding the mixture dataset requires either screenshot transcription or contacting the authors.
+- **Mixture-aware model is data-limited, not architecture-limited.** v4 trained the PairEncoder on the 16 known mixtures and confirmed Spearman of −0.72 (worse than random); the data has only one common-component scaffold (glycerol) and only two concentration tiers, so the model can't learn the cross-regime interaction terms. The architecture would train meaningfully at 200+ binary rows with diverse component pairings. Day-one ask at Until.
 - **No molecular-dynamics features.** Until Labs explicitly couples atomic-scale MD to cellular-scale wet-lab screens; this repo is wet-lab data only. MD-derived hydration metrics (water displacement, H-bond disruption, glass-transition predictions) would be a natural complementary feature set. Discussed in [DESIGN_DOC.md](DESIGN_DOC.md).
 - **No wet-lab validation.** The Pareto top-20 is a recommendation list, not validated predictions. Closing the loop is also in [DESIGN_DOC.md](DESIGN_DOC.md).
 
@@ -516,7 +581,7 @@ The aux head training recipe (in `[src/models/chemberta_lora.py](src/models/chem
 ### Engineering notes worth recording
 
 - The data layer schema change (long-format `concentration_mol_kg` column) is non-breaking for IRI and permeability because they each had a single fixed concentration in the original data; v2 just makes that explicit. Old caches auto-invalidate via the `concentration_mol_kg not in long_df.columns` check.
-- ChemBERTa OOF aggregation now keys toxicity predictions by `"smiles@concentration"` strings (multiple per compound) and IRI / permeability by bare smiles. The `_eval_per_task` helper handles both formats.
+- ChemBERTa OOF aggregation now keys toxicity predictions by `"smiles|concentration"` strings (multiple per compound) and IRI / permeability by bare smiles. The `_eval_per_task` helper handles both formats.
 - The candidate-scoring path predicts at task-specific reference concentrations: 6 mol/kg for toxicity, the assay defaults for IRI / permeability. That's documented in `[src/models/ensemble.py:predict_chemberta_ensemble](src/models/ensemble.py)`.
 - For reproducibility, the v1 numbers are still queryable from the `results_table.csv` rows where the toxicity OOF n=22; v2 rows have toxicity OOF n=50.
 
@@ -554,6 +619,7 @@ cpa-screening/
 │   ├── score_mixtures.py          # additive baseline eval + Pareto top-K binary pairs (v2.1)
 │   ├── analyze_novelty.py         # filter all_scored to compounds NOT in training (v3)
 │   ├── sweep_tox21_aux.py         # ChemBERTa Tox21 aux-weight sweep (v3)
+│   ├── qbc.py                     # query-by-committee: RF/ChemBERTa disagreement ranking (v4)
 │   ├── eval.py                    # metrics + parity plots
 │   ├── figures.py                 # README-quality figures
 │   └── utils.py                   # paths, seeding, canonical SMILES

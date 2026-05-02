@@ -45,6 +45,7 @@ from .models.mixture import (
     evaluate_additive_baseline,
     load_mixtures,
     score_fda_mixture_pairs,
+    train_pair_encoder_loo,
     MIX_RESULTS_DIR,
 )
 from .utils import RESULTS_DIR, get_logger
@@ -146,6 +147,22 @@ def main() -> None:
     if not eval_df.empty:
         eval_df.to_csv(MIX_RESULTS_DIR / "additive_baseline_predictions.csv", index=False)
         log.info("wrote %s", MIX_RESULTS_DIR / "additive_baseline_predictions.csv")
+
+    # PairEncoder LOO-CV against the same mixtures: does a learned
+    # interaction term beat the additive baseline at this sample size?
+    if not mixtures.empty:
+        pe = train_pair_encoder_loo(mixtures)
+        if pe:
+            pe["per_row"].to_csv(
+                MIX_RESULTS_DIR / "pair_encoder_predictions.csv", index=False,
+            )
+            with open(MIX_RESULTS_DIR / "pair_encoder_metrics.json", "w") as f:
+                json.dump({"n": pe["n"], "metrics": pe["metrics"]}, f, indent=2)
+            log.info(
+                "wrote %s and %s",
+                MIX_RESULTS_DIR / "pair_encoder_predictions.csv",
+                MIX_RESULTS_DIR / "pair_encoder_metrics.json",
+            )
 
     if summary:
         # Save summary as JSON for later inspection

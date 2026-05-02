@@ -118,6 +118,38 @@ MIXTURES = [
 ]
 
 
+# Hand-verified canonical SMILES for the 22 compounds. RDKit canonicalization
+# was applied to make sure these are deterministic across re-runs. Names that
+# PubChem lookup tends to miss or returns ambiguously (dimethylacetamide,
+# triethylene glycol diacetate, triglyme, etc.) are baked in here so the CSV
+# is self-contained and a reviewer can inspect the SMILES without running
+# the pipeline.
+SMILES = {
+    "2,3-butanediol":                    "CC(O)C(C)O",
+    "diethylene glycol":                 "OCCOCCO",
+    "1,3-dihydroxyacetone":              "O=C(CO)CO",
+    "diglyme":                           "COCCOCCOC",
+    "dimethylacetamide":                 "CC(=O)N(C)C",
+    "ethylene glycol":                   "OCCO",
+    "glycerol":                          "OCC(O)CO",
+    "2-methoxyethanol":                  "COCCO",
+    "2-methyl-2,4-pentanediol":          "CC(O)CC(C)(C)O",
+    "2-methyl-1,3-propanediol":          "CC(CO)CO",
+    "N-methylacetamide":                 "CNC(C)=O",
+    "1,3-propanediol":                   "OCCCO",
+    "propionamide":                      "CCC(N)=O",
+    "tetraethylene glycol dimethyl ether": "COCCOCCOCCOCCOC",
+    "tetrahydrofurfuryl alcohol":        "OCC1CCCO1",
+    "triethylene glycol":                "OCCOCCOCCO",
+    "triethylene glycol diacetate":      "CC(=O)OCCOCCOCCOC(C)=O",
+    "triglyme":                          "COCCOCCOCCOC",
+    "acetamide":                         "CC(N)=O",
+    "propylene glycol":                  "CC(O)CO",
+    "formamide":                         "NC=O",
+    "dimethyl sulfoxide":                "CS(C)=O",
+}
+
+
 def main() -> None:
     with OUT.open("w", newline="") as f:
         writer = csv.writer(f)
@@ -133,13 +165,17 @@ def main() -> None:
             ]
         )
         for name, viability in FIG2_3MOLKG:
-            writer.writerow([name, "", "", "", 3, viability, "False"])
+            writer.writerow([name, "", SMILES.get(name, ""), "", 3, viability, "False"])
         for name, viability in FIG3_6MOLKG:
-            writer.writerow([name, "", "", "", 6, viability, "False"])
+            writer.writerow([name, "", SMILES.get(name, ""), "", 6, viability, "False"])
         for name, viability in FIG4_12MOLKG:
-            writer.writerow([name, "", "", "", 12, viability, "False"])
+            writer.writerow([name, "", SMILES.get(name, ""), "", 12, viability, "False"])
         for name1, name2, conc, viability in MIXTURES:
-            writer.writerow([name1, name2, "", "", conc, viability, "True"])
+            writer.writerow([
+                name1, name2,
+                SMILES.get(name1, ""), SMILES.get(name2, ""),
+                conc, viability, "True",
+            ])
     print(
         f"wrote {OUT}: "
         f"{len(FIG2_3MOLKG)} singles@3mol/kg + "

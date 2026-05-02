@@ -1,0 +1,61 @@
+{
+  "pubchem_cache": {
+    "n_total": 2670,
+    "n_hits": 32,
+    "n_misses": 2638,
+    "cache_path": "/Users/cristian_mendoza/Desktop/personal_projects/biotech-research/cryoprotectant-exploration/data/.cache/pubchem.json",
+    "failures_path": "/Users/cristian_mendoza/Desktop/personal_projects/biotech-research/cryoprotectant-exploration/data/.cache/pubchem_failures.txt"
+  },
+  "task_directions": {
+    "toxicity": "min",
+    "permeability": "max",
+    "iri": "min"
+  },
+  "n_long_rows": 369,
+  "unique_compounds": 326,
+  "smiles_length": {
+    "n": 326,
+    "min": 4,
+    "p25": 24.25,
+    "median": 50.0,
+    "p75": 54.0,
+    "max": 134,
+    "mean": 43.671779141104295
+  },
+  "per_task": {
+    "iri": {
+      "n": 303,
+      "n_unique_compounds": 303,
+      "value_min": 1.0,
+      "value_max": 121.8,
+      "value_mean": 53.44785478547855,
+      "value_std": 28.47496474993895,
+      "sources": [
+        "dolmen_amino",
+        "dolmen_glyco2"
+      ]
+    },
+    "permeability": {
+      "n": 16,
+      "n_unique_compounds": 16,
+      "value_min": 0.26,
+      "value_max": 57.36,
+      "value_mean": 20.791875,
+      "value_std": 16.813809138157094,
+      "sources": [
+        "higgins_jan2025"
+      ]
+    },
+    "toxicity": {
+      "n": 50,
+      "n_unique_compounds": 22,
+      "value_min": -25.0,
+      "value_max": 100.0,
+      "value_mean": 56.38,
+      "value_std": 41.413471238233576,
+      "sources": [
+        "higgins_dec2025"
+      ]
+    }
+  }
+}

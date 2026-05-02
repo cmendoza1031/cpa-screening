@@ -14,8 +14,6 @@ adding 5 seeds doesn't change the conclusion shape and would 5x the
 runtime. Final reporting in the README still uses the cluster-ensemble
 numbers from the chosen weight.
 
-Cost: 6 weights * 5 folds = 30 ChemBERTa trainings. ~10 min on Blackwell,
-~20-30 min on T4/L4 (G4).
 
 Output: writes results/sweeps/tox21_aux_sweep.csv with columns
 {weight, task, n, mae, rmse, r2, spearman}, plus a summary print.

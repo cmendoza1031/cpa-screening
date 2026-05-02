@@ -21,7 +21,7 @@ Pipeline:
 
 Usage:
     python -m src.score_candidates --architecture rf            # RF ensemble only (fast)
-    python -m src.score_candidates --architecture chemberta     # ChemBERTa ensemble (~2-5 min on GPU)
+    python -m src.score_candidates --architecture chemberta     # ChemBERTa ensemble
     python -m src.score_candidates --architecture both          # both, primary scoring uses ChemBERTa
 
 Re-uses the same hyperparams as src.train (--lora-rank, --epochs, etc) for
@@ -145,21 +145,31 @@ def plot_pareto_3d(df: pd.DataFrame, out_path: Path) -> None:
         log.warning("not enough scored candidates for Pareto plot (n=%d)", len(sub))
         return
 
-    fig = plt.figure(figsize=(7, 6))
+    fig = plt.figure(figsize=(9, 7))
     ax = fig.add_subplot(111, projection="3d")
     on = sub[sub["pareto"]]
     off = sub[~sub["pareto"]]
+    # Dominated points: darker gray + larger marker so they're visible against
+    # the white background. Light gray at small markers was effectively invisible.
     ax.scatter(off["toxicity_mean"], off["permeability_mean"], off["iri_mean"],
-               s=8, alpha=0.3, c="lightgray", label=f"dominated (n={len(off)})")
+               s=18, alpha=0.5, c="#7d7d7d", edgecolors="none",
+               label=f"dominated (n={len(off)})")
+    # Pareto front: bigger red, darker outline for crispness
     ax.scatter(on["toxicity_mean"], on["permeability_mean"], on["iri_mean"],
-               s=24, alpha=0.9, c="tab:red", label=f"Pareto front (n={len(on)})")
-    ax.set_xlabel("toxicity (min)")
-    ax.set_ylabel("permeability (max)")
-    ax.set_zlabel("iri %MGS (min)")
-    ax.legend(loc="upper right")
-    ax.set_title("FDA IID candidates: Pareto front in (tox, perm, iri) space")
-    fig.tight_layout()
-    fig.savefig(out_path, dpi=140)
+               s=55, alpha=0.95, c="#d62728", edgecolors="#7a0000", linewidths=0.5,
+               label=f"Pareto front (n={len(on)})")
+    ax.set_xlabel("toxicity (lower = better)", fontsize=10, labelpad=8)
+    ax.set_ylabel("permeability (higher = better)", fontsize=10, labelpad=8)
+    ax.set_zlabel("IRI %MGS (lower = better)", fontsize=10, labelpad=8)
+    ax.tick_params(axis="both", labelsize=9)
+    ax.legend(loc="upper left", fontsize=10, framealpha=0.95)
+    ax.set_title("FDA IID candidates: Pareto front in (toxicity, permeability, IRI) space",
+                 fontsize=11)
+    # Slight viewing-angle nudge so the front separates more clearly
+    ax.view_init(elev=22, azim=-58)
+    # Pad the layout so the z-axis label doesn't get clipped on the right
+    fig.subplots_adjust(left=0.02, right=0.86, top=0.94, bottom=0.04)
+    fig.savefig(out_path, dpi=160, facecolor="white")
     plt.close(fig)
     log.info("wrote %s", out_path)
 
@@ -171,7 +181,7 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Score FDA IID candidates")
     p.add_argument("--architecture", choices=["rf", "chemberta", "both"], default="rf",
                    help="rf is fast (~30s); chemberta is the foundation model "
-                        "(~2-5 min on GPU); both runs each separately")
+                        "; both runs each separately")
     p.add_argument("--n-seeds", type=int, default=5,
                    help="ensemble size (default 5)")
     p.add_argument("--seed", type=int, default=0)
@@ -279,6 +289,22 @@ def main() -> None:
         scored[f"{task}_q95"] = q95
         scored[f"{task}_lo95"] = scored[f"{task}_mean"] - q95
         scored[f"{task}_hi95"] = scored[f"{task}_mean"] + q95
+
+    # When both architectures were trained, also persist per-architecture
+    # predictions so query-by-committee disagreement scoring (src.qbc) can
+    # read them directly from all_scored.csv without retraining.
+    if len(arch_preds) > 1:
+        for arch_name, arch_pred in arch_preds.items():
+            for task in REG_TASKS:
+                col_mean = f"{arch_name}_{task}_mean"
+                col_std = f"{arch_name}_{task}_std"
+                means, stds = [], []
+                for s in scored["smiles_canonical"]:
+                    mu, sd = arch_pred.get(task, {}).get(s, (np.nan, np.nan))
+                    means.append(mu)
+                    stds.append(sd)
+                scored[col_mean] = means
+                scored[col_std] = stds
 
     # Drop rows missing any task prediction
     n_before = len(scored)
