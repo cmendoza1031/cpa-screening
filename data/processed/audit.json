@@ -51,8 +51,8 @@
       "n_unique_compounds": 22,
       "value_min": -25.0,
       "value_max": 100.0,
-      "value_mean": 56.38,
-      "value_std": 41.413471238233576,
+      "value_mean": 56.4,
+      "value_std": 41.42076773793552,
       "sources": [
         "higgins_dec2025"
       ]

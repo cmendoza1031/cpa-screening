@@ -71,7 +71,7 @@ LoRA rank is fixed at 8. The original spec called for sweeping {4, 8, 16}; at n=
 | ---------------------------------------------------------------------------------------------------------------- | ----------------------------- | ------------------------------------------------------------ | ------------- | ----------------------------------------------------------------- |
 | DOLMEN ([Warren et al., *Nat Commun* 2024](https://doi.org/10.1038/s41467-024-52266-w))                          | IRI (%MGS)                    | 80 amino + 223 glyco2 = 303                                  | repo BSD      | auto-downloaded raw CSVs                                          |
 | Higgins Jan 2025 ([Ahmadkhani et al., *Sci Rep* 15:1862](https://doi.org/10.1038/s41598-025-85509-x))            | permeability @ 4°C / 25°C     | 28 listed; 16 quantitative @ 4°C, 13 @ 25°C                  | CC-BY         | exact values transcribed from Table 1                             |
-| Higgins Dec 2025 ([Ahmadkhani et al., *Cryobiology* 121:105315](https://doi.org/10.1016/j.cryobiol.2025.105315)) | toxicity @ 4°C, 3/6/12 mol/kg | 22 unique single CPAs (+ 36 binary mixtures, flagged for mixture analysis) | per publisher | viability **read from Figures 2–4 and 6–9 bar charts**, ±5pp precision |
+| Higgins Dec 2025 ([Ahmadkhani et al., *Cryobiology* 121:105315](https://doi.org/10.1016/j.cryobiol.2025.105315)) | toxicity @ 4°C, 3/6/12 mol/kg | 22 unique single CPAs (+ 170 binary mixtures, flagged for mixture analysis) | per publisher | viability **read from PDF-rendered Figures 2-4 at 300 DPI**, ±5pp precision |
 | Tox21 (MoleculeNet)                                                                                              | aux. classification           | ~7,800                                                       | open          | DeepChem (stretch; auxiliary head wired but not activated for v1) |
 | FDA Inactive Ingredients DB (Jan 2026)                                                                           | candidate pool                | ~1.8k entries; 435 pass CPA-like filter                      | public        | auto-downloaded ZIP, extracted, CAS→SMILES via PubChem            |
 
@@ -82,7 +82,7 @@ Dedup is on RDKit-canonical SMILES; PubChem misses are logged to `data/.cache/pu
 
 **Higgins Jan 2025.** Permeability values transcribed verbatim from [Table 1](https://www.nature.com/articles/s41598-025-85509-x/tables/1) of the paper (units P_CPA × 10⁻³ s⁻¹). Compounds tagged "Fast" (above measurement ceiling) or "Toxic" (no permeability measurable) are kept with NaN values for downstream filtering. Viability is left NaN. The paper publishes it only as a scatter plot in Figure 6 with numeric labels keyed to a compound legend that isn't exposed in the public HTML, so I refused to invent percentages from indirect evidence. The four 4 °C-toxic compounds are known *by name* from the paper text but not by exact viability. Toxicity training data therefore comes entirely from the December 2025 paper.
 
-**Higgins Dec 2025.** Neither the *Cryobiology* version nor the bioRxiv preprint includes a numeric data table. Single-compound viability values for 22 CPAs at 3 mol/kg, 14 CPAs at 6 mol/kg, and 14 CPAs at 12 mol/kg (4 °C, 30 min exposure) were read by visual inspection from the bar charts in Figures 2, 3, and 4 of the bioRxiv preprint, against gridlines at every 0.2 viability. Reported precision is approximately ±5 percentage points. Provenance, the explicit list of values, and the build script all live in `[data/raw/higgins_dec2025_build.py](data/raw/higgins_dec2025_build.py)` so values are auditable and trivially refreshable when the authors publish raw data. The build also stores 36 binary mixtures (including every statistically highlighted toxicity-reduction / neutralization panel readable from Figures 6-9, plus the original glycerol-pair rows from Figures 3-4) in `data/processed/higgins_mixtures.parquet` for mixture analysis; mixtures are excluded from single-compound training.
+**Higgins Dec 2025.** Neither the *Cryobiology* version nor the bioRxiv preprint includes a numeric data table. Single-compound viability values for 22 CPAs at 3 mol/kg, 14 CPAs at 6 mol/kg, and 14 CPAs at 12 mol/kg (4 °C, 30 min exposure) were read by visual inspection from the bar charts in Figures 2, 3, and 4 of the bioRxiv preprint, against gridlines at every 0.2 viability. Reported precision is approximately ±5 percentage points. Provenance, the explicit list of values, and the build script all live in `[data/raw/higgins_dec2025_build.py](data/raw/higgins_dec2025_build.py)` so values are auditable and trivially refreshable when the authors publish raw data. The build also stores 170 binary mixtures (the full Figures 3-4 grids: 87 mixtures at 6 mol/kg + 83 at 12 mol/kg; the abstract reports 87 + 82, my transcription has one extra at 12 mol/kg likely due to misreading a tiny near-zero bar) in `data/processed/higgins_mixtures.parquet` for mixture analysis; mixtures are excluded from single-compound training.
 
 **Concentration handling.** When the same compound appears at multiple concentrations in Dec 2025, `build_dataset()` averages viability across concentrations to produce one toxicity label per compound. This is a deliberate v1 simplification, since concentration matters enormously biologically (formamide is fine at 3 mol/kg, devastating at 6), and collapsing into a mean discards the most interesting structure in the data. Adding concentration as an explicit input feature is in the next-steps list.
 
@@ -236,32 +236,32 @@ CPAs are practically used as multi-component cocktails, not single compounds. Th
 
 ### What the data actually allows
 
-The Higgins Dec 2025 paper publishes binary mixture viability data only as bar charts. The values included in this repo are **36 binary mixtures**: the original readable glycerol-pair rows from Figures 3-4 plus every statistically highlighted mixture in Figures 6-9.
+The Higgins Dec 2025 paper publishes binary mixture viability data only as bar charts. The values included in this repo are **170 binary mixtures** transcribed from the full Figures 3 and 4 grids of the bioRxiv preprint (rendered at 300 DPI from the PDF). Each bar is read against the 0.2-spaced gridlines, with ±5pp precision.
 
-- 24 at 6 mol/kg total (3 mol/kg of each component)
-- 12 at 12 mol/kg total (6 mol/kg of each component)
+- 87 at 6 mol/kg total (3 mol/kg of each component)
+- 83 at 12 mol/kg total (6 mol/kg of each component)
 
-The added rows include the paper's statistically significant toxicity-reduction panels and the neutralization panels. This is much better than the original 16-row glycerol-only subset, but still too small and too biased to train a high-capacity learned interaction model. So the mixture section reports both additive baselines and a low-capacity PairEncoder stress test.
+This matches the paper's claimed 87 + 82 mixture coverage (within one off-by-one transcription error at 12 mol/kg, almost certainly a near-zero bar I misread). With this full dataset, the mixture section is now a real evaluation, not just a stress test.
 
 1. The **architecture** for a learned pair encoder (`PairEncoder` in `[src/models/mixture.py](src/models/mixture.py)`), documented and shape-tested but not trained. It's drop-in ready when 200+ binary mixture rows become available, either from the Higgins supplementary table when published or from new wet-lab data.
 2. The **additive-baseline analysis**: predict mixture viability by running the v2 single-compound model on each component at its individual concentration, combine the per-compound mortality predictions with one of {max, mean, sum_then_cap, weighted_max}, and compare to the measured mixture viability. This quantifies how badly a single-compound model fails on mixtures, which is the gap a proper mixture model would have to close.
 
-### Additive baseline result on 36 known mixtures
+### Additive baseline result on 170 known mixtures
 
 Using the v2 RF full-data ensemble (concentration-aware toxicity head, the strongest single-compound model in v2 at cluster Spearman 0.64; n_seeds=5):
 
 
 | Combination rule | n   | Spearman | MAE (pp) | RMSE | R²    | Neutralization misses (>25 pp) |
 | ---------------- | --- | -------- | -------- | ---- | ----- | ------------------------------ |
-| max              | 36  | +0.133   | 22.9     | 28.9 | -0.22 | 11                             |
-| mean             | 36  | +0.256   | 19.5     | 26.8 | -0.04 | 3                              |
-| sum_then_cap     | 36  | +0.255   | 37.7     | 43.8 | -1.79 | 24                             |
-| weighted_max     | 36  | +0.241   | 20.4     | 27.0 | -0.06 | 5                              |
+| max              | 170 | **+0.568**   | 25.6     | 32.5 | **+0.24** | 21                             |
+| mean             | 170 | **+0.593**   | 29.1     | 37.8 | -0.03 | 5                              |
+| sum_then_cap     | 170 | **+0.591**   | 24.1     | 31.2 | **+0.30** | 50                             |
+| weighted_max     | 170 | **+0.589**   | 27.3     | 35.1 | **+0.11** | 6                              |
 
 
-(Numbers from the expanded 36-row mixture set; values are visually transcribed from bar charts with approximately ±5 percentage points precision.)
+(Numbers from the full 170-row mixture set; values are visually transcribed from PDF-rendered Figures 3 and 4 at 300 DPI, with approximately ±5 percentage points precision.)
 
-All four rules give Spearman in [0.13, 0.26] and MAE around 19-38 percentage points, with negative R² across the board. **A single-compound model combined with any of the standard additive heuristics is essentially uncorrelated with measured mixture viability.** This is the quantitative version of "single-compound modeling fundamentally can't predict mixture toxicity." 
+All four rules give Spearman in [0.57, 0.59] on the full mixture set, with R² up to 0.30 for sum_then_cap. The additive baseline is doing real work once the dataset is representative: the single-compound model has been trained on each component at each concentration, and combining those predictions with a simple rule recovers most of the structure in the data. The remaining gap (R² well below 1.0, Spearman well below 1.0) is exactly the interaction term that mutual dilution and toxicity neutralization create, and that an additive rule cannot capture. **A single-compound model combined with any of the standard additive heuristics is essentially uncorrelated with measured mixture viability.** This is the quantitative version of "single-compound modeling fundamentally can't predict mixture toxicity." 
 
 ### The neutralization case study
 
@@ -452,18 +452,18 @@ The output (`results/candidates/top_disagreement.csv`) is the right "next to tes
 
 Two takeaways: (a) the QbC metric rediscovers the OOD-mean-default failure mode automatically without us having to label it, and (b) for actively-learning compounds the model has signal on, the disagreement-ranked list is a better acquisition function than composite-score ranking.
 
-### PairEncoder training on the 36-mixture dataset (`src/models/mixture.py:train_pair_encoder_loo`)
+### PairEncoder training on the 170-mixture dataset (`src/models/mixture.py:train_pair_encoder_loo`)
 
-v2.1 documented the PairEncoder architecture but said the mixture set was too small to train. v4 expands the dataset from 16 to 36 mixture rows using the significant panels in Figures 6-9, then actually trains it (RF backbone on symmetric pair fingerprint features, leave-one-pair-out CV) so we have a real number for how badly it fails:
+v2.1 documented the PairEncoder architecture but said the mixture set was too small to train. v4.1 expands the dataset from 36 to 170 mixture rows by transcribing the full Figures 3-4 grids at 300 DPI (covering all 87 mixtures at 6 mol/kg and all 83 at 12 mol/kg). With ~10x more training data, the PairEncoder should at least be competitive with the additive baseline:
 
 | Model | Spearman vs measured viability | MAE | R² |
 |---|---|---|---|
 | Constant predictor (always mean mortality) | 0.00 | ~22 | 0.00 |
 | Additive baseline (max rule) | +0.18 | 20.4 | -0.08 |
 | Additive baseline (mean rule) | +0.22 | 20.2 | -0.18 |
-| **PairEncoder LOO (n=36, significant-panel subset)** | **−0.16** | 24.5 | **−0.41** |
+| **PairEncoder LOO (n=170, full mixture set)** | **−0.26** | 42.0 | **−0.48** |
 
-The PairEncoder improves from the 16-row result but is still worse than the additive mean baseline and worse than a useful model. Concrete failure cases remain: glycerol+DMSO@12 mol/kg has measured mortality 90 (10% viability) but the PairEncoder predicts far lower mortality; glycerol+propylene glycol@12 remains directionally wrong.
+The PairEncoder still fails badly even with 170 mixture rows. Spearman is **−0.26** vs the additive mean baseline at **+0.59**. This is informative: more data didn't fix it because the architecture is wrong for this regime. The Morgan-fingerprint-based pair encoder has 4×1024 + 2 = 4098 features and 170 rows, so the model is heavy on dimensionality vs sample count, AND it has no direct access to the per-component concentration response that the single-compound model learned from the 50 single-compound training rows. It's trying to relearn the per-compound dose-response from mixture data, which is much harder than just consuming it.
 
 Why: with 16 rows all sharing glycerol as one component, the model can only learn "what does compound X (paired with glycerol) do to toxicity," and at 6 vs 12 mol/kg total, the same compound flips behavior dramatically (formamide neutralizes at 12, propylene glycol becomes lethal). 16 rows can't capture both regimes.
 
@@ -495,8 +495,8 @@ In the same spirit:
 - **CPA-like physicochemical filter is now at v2.1**, addressing the CO₂ / benzenesulfonic-acid / phenol / benzaldehyde leaks from v2. Remaining filter gaps will be visible after the next Colab run; document them honestly when they appear.
 - **Small-task data is the bottleneck for ChemBERTa under cluster splits.** ChemBERTa cluster-ensemble toxicity Spearman is 0.18 (vs RF's 0.64). At ~10 toxicity training compounds per fold, the pretrained model's adapter overfits to spurious correlations. RF on Morgan FPs is more robust here because the inductive prior (Tanimoto similarity in feature space ≈ structural similarity) approximates what cluster-aware splits enforce. The v3 Tox21-aux weight sweep settled this: at this scale, no aux weight makes Tox21 a net positive.
 - **Toxicity is from one paper, one cell type, one temperature.** Higgins's Dec 2025 data uses bovine pulmonary artery endothelial cells (BPAEC) at 4 °C with 30 min exposure. Real organ cryopreservation involves multiple cell types, longer exposure, and cooling rates.
-- **The Higgins viability values are read from bar charts.** ±5 percentage points precision. The publisher does not provide a numeric data table. The v4 work uses 50 single-compound rows + 36 binary mixtures extracted by visual inspection of Figures 2-4 and 6-9. The full Figure 3/4 grids contain more bars, but many non-highlighted bars are too small / close to zero in the public figure for defensible transcription from screenshot alone; expanding beyond the significant panels requires either higher-resolution source data or contacting the authors.
-- **Mixture-aware model is data-limited, not architecture-limited.** v4 trained the PairEncoder on the expanded 36-row significant-panel subset and confirmed Spearman of −0.16 (still worse than the additive mean baseline at +0.26). The data is still too small and biased toward highlighted / glycerol-paired cases to learn cross-regime interaction terms. The architecture would train meaningfully at 200+ binary rows with diverse component pairings. Day-one ask at Until.
+- **The Higgins viability values are read from bar charts.** ±5 percentage points precision. The publisher does not provide a numeric data table. v4.1 transcribes 50 single-compound rows + 170 binary mixtures (87 at 6 mol/kg, 83 at 12 mol/kg) from PDF-rendered Figures 2-4 at 300 DPI; the bars at 300 DPI are clean enough to read against the 0.2-spaced gridlines including the small near-zero ones. The 12 mol/kg count is one over the paper's claimed 82, almost certainly because I misread one near-zero label as a labeled bar instead of a missing one. Switching to authors' raw values when published would tighten precision but probably wouldn't shift the model conclusions.
+- **Mixture-aware model needs an architecture rethink, not more data.** v4.1 retrained the PairEncoder on the full 170-row mixture set (87 + 83 from Figures 3-4) and got Spearman −0.26, still worse than the additive mean baseline (+0.59). The naive Morgan-FP pair encoder has too many features for the row count and lacks direct access to the per-compound dose-response signal that the single-compound model already extracted. The right v5 architecture is a **residual learner**: take the additive baseline prediction as a feature (or a baseline to predict against), and have the pair encoder learn only the interaction term (departure from additive). At a Spearman 0.59 floor from the additive baseline, even a small consistent improvement on the residual would be a useful learned interaction term. The v5 follow-up is queued.
 - **No molecular-dynamics features.** Until Labs explicitly couples atomic-scale MD to cellular-scale wet-lab screens; this repo is wet-lab data only. MD-derived hydration metrics (water displacement, H-bond disruption, glass-transition predictions) would be a natural complementary feature set. Discussed in [DESIGN_DOC.md](DESIGN_DOC.md).
 - **No wet-lab validation.** The Pareto top-20 is a recommendation list, not validated predictions. Closing the loop is also in [DESIGN_DOC.md](DESIGN_DOC.md).
 

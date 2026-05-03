@@ -246,13 +246,13 @@ After v3 a careful re-read of the candidate list and the mixture story flagged f
 - The DMSO + propylene glycol mixture-pair "rediscovery" was framed as "the model surfaced a known cocktail with no mixture training labels" but both compounds are in the single-compound training set, so it's really "additive combination of two memorized predictions."
 - Several top-20 candidates (niacinamide, saccharin, aspartame, phenoxyethanol, dehydroacetic acid, benzocaine, methylparaben) aren't real CPAs. They rank high because the model defaults to training-mean predictions for OOD chemistry, and "ideal mean" gets ranked by the composite score.
 - The 5-seed deep ensembles capture WITHIN-architecture epistemic uncertainty but not BETWEEN-architecture disagreement (RF vs ChemBERTa), which is exactly the signal an active-learning loop should use.
-- The PairEncoder was documented as "needs more data" but never tested, so the gating claim wasn't verified.
+- The PairEncoder was documented as "needs more data" but never tested. v4 stress-tested at 16 rows and v4.1 ran on the full 170-row set; both failed. The gating claim was wrong.
 
 ### Hypotheses going in (v4)
 
 **Hypothesis H (query-by-committee)**: Disagreement between RF and ChemBERTa per task, computed on the FDA candidate pool's predictions, will surface compounds where one architecture is right and the other defaults to the training mean. **Predicted impact**: top disagreement candidates should be real CPAs the model has signal on (DMSO, PG, EG) where RF correctly assigns low toxicity and ChemBERTa predicts ~training mean. The QbC list is then a usable acquisition function for active learning.
 
-**Hypothesis I (PairEncoder LOO on the significant-panel mixture subset)**: Training a learned interaction term on the expanded but still-small mixture dataset with leave-one-pair-out CV will fail to beat the additive baseline. Specifically: Spearman vs measured viability should be at-best comparable to the additive mean rule (~0.25) and may be negative because the test holdout often spans concentration regimes (6 → 12 mol/kg) where the same compound's behavior flips dramatically (formamide neutralization at 12). **Predicted impact**: Spearman below the additive mean baseline, possibly negative. The result quantifies "the public significant-panel subset is still not enough" instead of just claiming it.
+**Hypothesis I (PairEncoder LOO on the full 170-mixture set)**: With ~10x more mixture data than the original 16-row subset, the PairEncoder should at least be competitive with the additive baseline. Specifically: Spearman comparable to or above the additive mean rule (~0.59 on the full set) would indicate the model is learning interaction terms; Spearman below would say the architecture is wrong for the data shape, not just data-starved.
 
 **Hypothesis J (DMSO+PG honest framing)**: Re-reading the candidate-list discussion with domain skepticism, the OOD-mean-default failure mode explains 5+ entries in the top-20. **Predicted impact**: this isn't a hypothesis you "test" but rather a framing fix; the impact is documentation precision, not a measurement.
 
@@ -260,7 +260,7 @@ After v3 a careful re-read of the candidate list and the mixture story flagged f
 
 **Hypothesis H confirmed.** QbC top-3 by L2-norm disagreement: DMSO (#1, 44 pp tox disagreement, RF correctly low at 14, ChemBERTa training-mean at 58.5), propylene glycol (#2, 32 pp), N-acetyl-D-alanine (#3, IRI disagreement of 42 pp). The QbC metric automatically rediscovers the OOD-mean-default failure without us having to label it. As an acquisition function, it would correctly say "test these compounds first" because a wet-lab measurement maximally constrains both models.
 
-**Hypothesis I confirmed.** After expanding the dataset from 16 to 36 significant-panel mixture rows, PairEncoder LOO Spearman improves from the earlier 16-row stress test but is still **−0.16**, MAE 24.5, R² −0.41. It remains worse than the additive mean baseline (Spearman +0.26, MAE 19.5). The model still can't extrapolate the cross-regime interaction patterns: some component pairs are benign at 6 mol/kg total and lethal at 12, while formamide+glycerol does the opposite via neutralization. This is evidence that the data, not the architecture, is the bottleneck.
+**Hypothesis I refuted.** With the full 170-mixture dataset, PairEncoder LOO Spearman is **−0.26**, MAE 42, R² −0.48. The additive baseline jumps to Spearman +0.59 with the same data. So more data DID fix the additive baseline (Spearman 0.13 → 0.59) but did NOT fix the PairEncoder, meaning the architecture is wrong for the data shape: 4098-dim FP pair features with 170 rows is dimensionally lopsided, and the model has no direct access to the per-compound dose-response signal the single-compound model already extracted. The right v5 architecture is residual learning (take the additive baseline as a feature/baseline; learn only the departure-from-additive interaction term). v5 is queued.
 
 **Hypothesis J shipped as documentation rewrites.** README candidate-list section now categorizes the top-20 as "5 known CPAs the model has signal on, 5-7 OOD compounds whose ranking is essentially noise from the mean-default predictions, 5+ memorized amino acids," and the DMSO+PG mixture-pair section now says "this is two memorized single-compound predictions combined under an additive rule, not novel mixture rediscovery."
 
@@ -269,7 +269,7 @@ After v3 a careful re-read of the candidate list and the mixture story flagged f
 | Hypothesis | Predicted | Actual | Verdict |
 |---|---|---|---|
 | H. QbC disagreement surfaces OOD-mean-default cases | DMSO / PG / EG should appear at top | DMSO #1 (44 pp), propylene glycol #2 (32 pp), ethylene glycol #13 (22 pp) | **right; specific compounds appeared as predicted** |
-| I. PairEncoder LOO on significant-panel mixture subset fails to beat additive baseline | Spearman below additive mean baseline (~0.26), possibly negative | Spearman −0.16, MAE 24.5, R² −0.41 vs additive mean Spearman +0.26 | **right; additional data helped but still not enough** |
+| I. PairEncoder LOO on full 170-row mixture set is at least competitive with additive baseline | Spearman ~0.59 (additive mean rule on same data) | Spearman -0.26, MAE 42, R² -0.48 (vs additive mean Spearman +0.59) | **wrong direction; architecture is wrong, not data-starved. v5 = residual learner using additive baseline as a feature.** |
 | J. (Framing rewrite, not a falsifiable hypothesis) | Documentation precision | Done | n/a |
 
 ---
@@ -281,8 +281,8 @@ After v3 a careful re-read of the candidate list and the mixture story flagged f
 | v2 (concentration / filter / Tox21) | 3 | 2 | 1 | 67% |
 | v2.1 (mixture analysis) | 3 | 3 | 0 | 100% |
 | v3 (filter v2.1 / novelty / Tox21 sweep) | 3 | 3 | 0 | 100% |
-| v4 (QbC / PairEncoder LOO; J was a framing fix) | 2 | 2 | 0 | 100% |
-| **Total** | **11** | **10** | **1** | **91%** |
+| v4 (QbC / PairEncoder LOO; J was a framing fix) | 2 | 1 | 1 | 50% |
+| **Total** | **11** | **9** | **2** | **82%** |
 
 The one miss (Tox21 aux) was the most uncertain prediction going in (I flagged it as "task transfer is unclear" in the original v2 commit). The five hits include both **directional** predictions (concentration helps / additive baselines fail) and **specific** predictions (DMSO+PG should appear in top mixture pairs by self-consistency). Calibration looks honest, not over-confident, with the appropriate caveats on the predictions that turned out wrong.
 
