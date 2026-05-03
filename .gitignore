@@ -38,6 +38,8 @@ results/candidates/*
 # Track the candidate output so reviewers can inspect without running
 !results/candidates/top20.csv
 !results/candidates/all_scored.csv
+!results/candidates/top_disagreement.csv
+!results/candidates/top20_novel.csv
 results/summary.json
 results/results_table.csv
 results.zip
