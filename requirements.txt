@@ -24,3 +24,4 @@ scipy>=1.11
 # Plotting
 matplotlib>=3.8
 seaborn>=0.13
+adjustText>=1.3
