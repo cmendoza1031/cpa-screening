@@ -60,8 +60,28 @@ glycerol,"1,3-propanediol",OCC(O)CO,OCCCO,6,73,True
 glycerol,"2,3-butanediol",OCC(O)CO,CC(O)C(C)O,6,73,True
 glycerol,2-methoxyethanol,OCC(O)CO,COCCO,6,50,True
 glycerol,"2-methyl-1,3-propanediol",OCC(O)CO,CC(CO)CO,6,53,True
+acetamide,2-methoxyethanol,CC(N)=O,COCCO,6,105,True
+2-methoxyethanol,dimethylacetamide,COCCO,CC(=O)N(C)C,6,90,True
+formamide,2-methoxyethanol,NC=O,COCCO,6,88,True
+"2-methyl-1,3-propanediol",dimethylacetamide,CC(CO)CO,CC(=O)N(C)C,6,82,True
+formamide,"2,3-butanediol",NC=O,CC(O)C(C)O,6,52,True
+formamide,dimethylacetamide,NC=O,CC(=O)N(C)C,6,58,True
+"2,3-butanediol",dimethylacetamide,CC(O)C(C)O,CC(=O)N(C)C,6,80,True
+"2,3-butanediol","2-methyl-1,3-propanediol",CC(O)C(C)O,CC(CO)CO,6,75,True
+acetamide,"2,3-butanediol",CC(N)=O,CC(O)C(C)O,6,75,True
+N-methylacetamide,"2-methyl-1,3-propanediol",CNC(C)=O,CC(CO)CO,6,88,True
+"1,3-propanediol","2-methyl-1,3-propanediol",OCCCO,CC(CO)CO,6,92,True
+dimethyl sulfoxide,acetamide,CS(C)=O,CC(N)=O,6,93,True
 glycerol,formamide,OCC(O)CO,NC=O,12,95,True
 glycerol,ethylene glycol,OCC(O)CO,OCCO,12,75,True
 glycerol,propylene glycol,OCC(O)CO,CC(O)CO,12,0,True
 glycerol,dimethyl sulfoxide,OCC(O)CO,CS(C)=O,12,10,True
 glycerol,"1,3-dihydroxyacetone",OCC(O)CO,O=C(CO)CO,12,35,True
+glycerol,"1,3-propanediol",OCC(O)CO,OCCCO,12,65,True
+glycerol,diethylene glycol,OCC(O)CO,OCCOCCO,12,35,True
+N-methylacetamide,"2-methyl-1,3-propanediol",CNC(C)=O,CC(CO)CO,12,38,True
+dimethyl sulfoxide,formamide,CS(C)=O,NC=O,12,52,True
+dimethyl sulfoxide,propylene glycol,CS(C)=O,CC(O)CO,12,5,True
+glycerol,acetamide,OCC(O)CO,CC(N)=O,12,50,True
+formamide,diethylene glycol,NC=O,OCCOCCO,12,15,True
+ethylene glycol,acetamide,OCCO,CC(N)=O,12,55,True

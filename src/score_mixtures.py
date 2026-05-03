@@ -168,7 +168,7 @@ def main() -> None:
         # Save summary as JSON for later inspection
         with open(MIX_RESULTS_DIR / "additive_baseline_summary.json", "w") as f:
             json.dump(summary, f, indent=2)
-        log.info("\nAdditive baseline summary (16 known mixtures):")
+        log.info("\nAdditive baseline summary (%d known mixtures):", len(mixtures))
         log.info("rule              n   Spearman    MAE   RMSE     R^2  n_neut_misses")
         log.info("------------------------------------------------------------------")
         for rule, m in summary.items():

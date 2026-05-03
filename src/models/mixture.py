@@ -27,7 +27,7 @@ This module ships:
    is a pure inference path on the v2 model.
 
 3. `evaluate_additive_baseline()` -- per-rule Spearman / MAE / R^2 on the
-   16 known mixtures, plus per-row residuals so neutralization failures
+   known Higgins mixture rows, plus per-row residuals so neutralization failures
    (formamide+glycerol at 12 mol/kg) are visible.
 
 4. `score_fda_mixture_pairs()` -- enumerate ~140-choose-2 binary pairs
