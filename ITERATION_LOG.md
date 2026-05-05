@@ -1,16 +1,14 @@
 # Iteration log
 
-How the project's findings progressed from the original Phase 1-3 plan through three follow-up iterations. For each version: what was built, what the numbers said, what hypothesis the results suggested, and (critically) whether the hypothesis was right when we tested it in the next iteration.
-
-The point of this document is two-fold. First, anyone reading the repo can see the actual research process, not just the final state. Second, the calibration record (predictions vs outcomes) is the most honest indicator of how to weight my future hypotheses about CPA modeling. Three out of five v2 hypotheses landed; one (Tox21 aux) didn't pay off the way I expected; and the v2.1 mixture predictions all hit. That's a useful signal for what to bet on next.
+How the project's findings progressed from the original plan through three follow-up iterations. For each version: what was built, what the numbers said, what hypothesis the results suggested, and (critically) whether the hypothesis was right when we tested it in the next iteration.
 
 ---
 
-## v1: original Phase 1-3 plan (commit `6f4a159`)
+## v1: original plan
 
 ### What was built
 
-The exact spec from the original 5-day plan. RF baseline + ChemBERTa-2 + LoRA + cluster-aware splits + 5-seed deep ensembles + conformal calibration + FDA IID Pareto ranking. Single-compound toxicity training averaged across the three concentrations Higgins Dec 2025 measures (3, 6, 12 mol/kg → one mean per compound). FDA filter: `MW < 500 AND (HBD ≥ 1 OR HBA ≥ 2)`. Tox21 auxiliary head wired in the architecture but disabled (DeepChem install was broken on Python 3.12).
+The exact spec from the original plan. RF baseline + ChemBERTa-2 + LoRA + cluster-aware splits + 5-seed deep ensembles + conformal calibration + FDA IID Pareto ranking. Single-compound toxicity training averaged across the three concentrations Higgins Dec 2025 measures (3, 6, 12 mol/kg → one mean per compound). FDA filter: `MW < 500 AND (HBD ≥ 1 OR HBA ≥ 2)`. Tox21 auxiliary head wired in the architecture but disabled (DeepChem install was broken on Python 3.12).
 
 ### Headline numbers (cluster 5-fold 5-seed ensemble)
 
@@ -65,7 +63,7 @@ Looking at this list and the per-task numbers, three concrete things stuck out:
 
 ---
 
-## v2: concentration-aware + tighter filter + Tox21 aux (commit `c4ebe2f`)
+## v2: concentration-aware + tighter filter + Tox21 aux
 
 ### What was built
 
@@ -138,7 +136,7 @@ The v2 results were strong overall but two things still stood out:
 
 ---
 
-## v2.1: mixture-aware analysis (commits `4214bd2` + `585686e`)
+## v2.1: mixture-aware analysis
 
 ### What was built
 
@@ -206,7 +204,7 @@ Real CPA combination in top-10: **1** (DMSO + propylene glycol at #5). Single-co
 
 ---
 
-## v3: filter v2.1, novel-only top-20, Tox21 aux weight sweep (commit pending)
+## v3: filter v2.1, novel-only top-20, Tox21 aux weight sweep
 
 ### What was built
 
@@ -338,6 +336,6 @@ The biggest single intervention by impact was concentration-aware toxicity in v2
 
 ## Where this leaves us
 
-The single-compound RF model on concentration-aware toxicity data is genuinely useful (0.64 cluster Spearman; conformal coverage 0.98). The candidate pool is much cleaner after v2's filter. The mixture-aware analysis quantifies the gap between additive and learned-interaction models, and the DMSO+PG rediscovery is a real positive signal even from the additive baseline. ChemBERTa is still bottlenecked by small-task data and didn't benefit from Tox21 aux at the recipe I tried.
+The single-compound RF model on concentration-aware toxicity data is genuinely useful (0.64 cluster Spearman; conformal coverage 0.98). The candidate pool is much cleaner after v2's filter and v3's v2.1 filter. The mixture analysis quantifies the gap between additive rules and a learned interaction term (PairEncoder did not help; a residual learner on top of the additive baseline is the natural next architecture). The DMSO+PG “rediscovery” is two memorized single-compound scores combined, not mixture learning. ChemBERTa is still bottlenecked by small-task data; the Tox21 aux sweep in v3 did not find a weight that fixes that.
 
-The most concrete next move is filter v2.1 (heavy-atom-count ≥ 6 + pKa cutoff) to drop CO₂ / H₂O₂ / formaldehyde / benzenesulfonic acid from both the single-compound and the mixture-pair top lists. After that, mixture data extraction (Higgins supplementary or Until's internal screens) is what gates actually training the PairEncoder. Both are tracked in the README's "What I'd build next" table.
+Concrete directions if the repo keeps evolving: residual learner on mixture residuals; more binary-mixture labels (Higgins supplementary tables or internal screens); optional MD-derived features and a closed acquisition loop (batch scoring → wet lab → retrain). Those are spelled out in the README **Limitations** and **What I'd build next** table rather than repeated here.
